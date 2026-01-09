@@ -17,6 +17,15 @@
   const elWorms = $("worms");
   const eventLogEl = $("eventLog");
 
+  // Optional inspector (only updates if present in HTML)
+  const inspector = $("inspector");
+  const selName = $("selName");
+  const dnaVal = $("dnaVal");
+  const tempVal = $("tempVal");
+  const biomeVal = $("biomeVal");
+  const styleVal = $("styleVal");
+  const mutList = $("mutList");
+
   if (!canvas) return;
 
   const ctx = canvas.getContext("2d", { alpha: true, desynchronized: true });
@@ -27,22 +36,6 @@
   const rand = (a, b) => a + Math.random() * (b - a);
   const randi = (a, b) => Math.floor(rand(a, b + 1));
   const lerp = (a, b, t) => a + (b - a) * t;
-
-  const TAU = Math.PI * 2;
-
-  // --- robust angle helpers (prevents drift/NaN collapse) ---
-  function wrapAngle(a) {
-    a = (a + Math.PI) % TAU;
-    if (a < 0) a += TAU;
-    return a - Math.PI;
-  }
-  function lerpAngle(a, b, t) {
-    if (!Number.isFinite(a)) a = 0;
-    if (!Number.isFinite(b)) b = 0;
-    t = clamp(t, 0, 1);
-    const d = wrapAngle(b - a);
-    return a + d * t;
-  }
 
   // =========================
   // Canvas sizing
@@ -152,9 +145,7 @@
     const n = audioCtx.createOscillator();
     n.type = "triangle";
 
-    // envelopes
     const A = 0.005;
-    const D = 0.25 + intensity * 0.2;
 
     if (type === "mut") {
       o.frequency.setValueAtTime(320 + 80 * intensity, now);
@@ -187,7 +178,7 @@
       g.gain.exponentialRampToValueAtTime(0.0001, now + 0.34);
     } else {
       o.frequency.setValueAtTime(420, now);
-      o.frequency.exponentialRampToValueAtTime(220, now + D);
+      o.frequency.exponentialRampToValueAtTime(220, now + 0.25);
       g.gain.setValueAtTime(0.0001, now);
       g.gain.linearRampToValueAtTime(0.10, now + A);
       g.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
@@ -197,13 +188,11 @@
     o.start(now);
     o.stop(now + 0.5);
 
-    // master pop-guard
     out.gain.setValueAtTime(0.0001, now);
     out.gain.linearRampToValueAtTime(1.0, now + 0.01);
     out.gain.exponentialRampToValueAtTime(0.0001, now + 0.7);
   }
 
-  // unlock audio on first interaction
   window.addEventListener("pointerdown", () => ensureAudio(), { passive: true, once: true });
 
   // =========================
@@ -219,7 +208,6 @@
 
   let bossSpawned = false;
 
-  // Milestones requested
   const milestone100k = { hit: false };
   const milestone250k = { hit: false };
 
@@ -236,10 +224,20 @@
   let focusOn = false;
   let isInteracting = false;
 
-  function toWorld(px, py) {
+  // ✅ FIX: convert client coords to canvas-local coords
+  function clientToCanvas(e) {
+    const rect = canvas.getBoundingClientRect();
     return {
-      x: (px - W / 2) / zoom - camX,
-      y: (py - H / 2) / zoom - camY
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top
+    };
+  }
+
+  // ✅ FIX: toWorld must use canvas-local coords
+  function toWorld(localX, localY) {
+    return {
+      x: (localX - W / 2) / zoom - camX,
+      y: (localY - H / 2) / zoom - camY
     };
   }
 
@@ -258,8 +256,19 @@
     return (best !== -1 && bestD < 280 * 280) ? best : -1;
   }
 
+  // ✅ Tap vs drag detection
+  let downPos = { x: 0, y: 0 };
+  let movedPx = 0;
+  const TAP_SLOP = 10;
+
   canvas.addEventListener("pointerdown", (e) => {
     canvas.setPointerCapture?.(e.pointerId);
+
+    const p = clientToCanvas(e);
+    downPos.x = p.x;
+    downPos.y = p.y;
+    movedPx = 0;
+
     dragging = true;
     isInteracting = true;
     lastX = e.clientX; lastY = e.clientY;
@@ -267,23 +276,34 @@
 
   canvas.addEventListener("pointermove", (e) => {
     if (!dragging) return;
-    const dx = e.clientX - lastX;
-    const dy = e.clientY - lastY;
+
+    const dxC = e.clientX - lastX;
+    const dyC = e.clientY - lastY;
     lastX = e.clientX; lastY = e.clientY;
-    camX += dx / zoom;
-    camY += dy / zoom;
+
+    movedPx += Math.abs(dxC) + Math.abs(dyC);
+
+    // pan camera
+    camX += dxC / zoom;
+    camY += dyC / zoom;
   }, { passive: true });
 
   canvas.addEventListener("pointerup", (e) => {
     dragging = false;
     isInteracting = false;
 
-    const w = toWorld(e.clientX, e.clientY);
-    const idx = pickColony(w.x, w.y);
-    if (idx !== -1) {
-      selected = idx;
-      pushLog("event", `Selected Colony #${idx + 1}`);
-      if (focusOn) centerOnSelected(true);
+    // ✅ only treat as a tap if you didn’t move much
+    if (movedPx <= TAP_SLOP) {
+      const p = clientToCanvas(e);
+      const w = toWorld(p.x, p.y);
+      const idx = pickColony(w.x, w.y);
+
+      if (idx !== -1) {
+        selected = idx;
+        pushLog("event", `Selected Colony #${idx + 1}`);
+        updateInspector(); // ✅
+        if (focusOn) centerOnSelected(true);
+      }
     }
   }, { passive: true });
 
@@ -354,7 +374,6 @@
     const b = bg.ctx;
     b.clearRect(0, 0, bg.w, bg.h);
 
-    // nebula blobs
     for (let i = 0; i < 10; i++) {
       const x = rand(0, bg.w), y = rand(0, bg.h);
       const r = rand(160, 360);
@@ -368,7 +387,6 @@
       b.fill();
     }
 
-    // galaxy swirls
     b.globalCompositeOperation = "lighter";
     for (let i = 0; i < 7; i++) {
       const cx = rand(0, bg.w), cy = rand(0, bg.h);
@@ -378,7 +396,7 @@
       b.lineWidth = rand(1.2, 2.4);
       for (let k = 0; k < 6; k++) {
         b.beginPath();
-        const start = rand(0, TAU);
+        const start = rand(0, Math.PI * 2);
         const span = rand(Math.PI * 0.6, Math.PI * 1.2);
         for (let t = 0; t <= 1.001; t += 0.06) {
           const a = start + span * t;
@@ -393,7 +411,6 @@
     }
     b.globalCompositeOperation = "source-over";
 
-    // stars
     for (let i = 0; i < 1400; i++) {
       const x = rand(0, bg.w), y = rand(0, bg.h);
       const r = Math.random() < 0.90 ? rand(0.3, 1.2) : rand(1.2, 2.2);
@@ -401,7 +418,7 @@
       const hue = Math.random() < 0.85 ? 210 : rand(180, 320);
       b.fillStyle = `hsla(${hue}, 95%, 85%, ${a})`;
       b.beginPath();
-      b.arc(x, y, r, 0, TAU);
+      b.arc(x, y, r, 0, Math.PI * 2);
       b.fill();
 
       if (r > 1.5 && Math.random() < 0.25) {
@@ -418,7 +435,7 @@
   }
   makeStarfield();
 
-  function drawBackground() {
+  function drawBackground(time) {
     const px = (-camX * zoom * 0.10) % bg.w;
     const py = (-camY * zoom * 0.10) % bg.h;
     for (let ix = -1; ix <= 1; ix++) {
@@ -433,25 +450,19 @@
   }
 
   // =========================
-  // Colony / worm models (more DNA + more variety)
+  // Colony / worm models
   // =========================
   const DNA_TEMPS = ["CALM", "AGGRESSIVE", "CHAOTIC", "TOXIC", "HYPER", "ZEN", "FERAL", "ROYAL"];
   const DNA_BIOMES = ["NEON GARDEN", "DEEP SEA", "VOID BLOOM", "GLASS CAVE", "ARC STORM", "EMBER WASTE", "ICE TEMPLE", "STARFIELD"];
   const DNA_STYLES = ["COMET", "CROWN", "ARC", "SPIRAL", "DRIFT", "RIBBON", "FRACTAL", "ORBIT"];
 
-  function makeColonyOutline(dna) {
-    const pts = [];
-    const baseR = 120 * dna.aura;
-    const spikes = randi(9, 16);
-    for (let i = 0; i < spikes; i++) {
-      const a = (i / spikes) * TAU;
-      const wob =
-        Math.sin(a * (2.0 + dna.chaos) + dna.seed) * (18 + 18 * dna.chaos) +
-        Math.sin(a * (5.0 + dna.drift) - dna.seed * 0.7) * (10 + 12 * dna.drift);
-      const r = baseR + wob;
-      pts.push({ a, r });
-    }
-    return pts;
+  function makeDnaCode(c) {
+    const a = Math.floor((c.dna.hue % 360));
+    const b = Math.floor(c.dna.chaos * 99);
+    const d = Math.floor(c.dna.drift * 99);
+    const e = Math.floor(c.dna.aura * 99);
+    const f = Math.floor(c.dna.limbiness * 99);
+    return `H${a}-C${b}-D${d}-A${e}-L${f}`;
   }
 
   function newColony(x, y, hue = rand(0, 360)) {
@@ -481,7 +492,23 @@
       shock: [],
       freezeT: 0,
       lastBreath: 0,
+      muts: [] // track colony-local mutations for optional inspector UI
     };
+  }
+
+  function makeColonyOutline(dna) {
+    const pts = [];
+    const baseR = 120 * dna.aura;
+    const spikes = randi(9, 16);
+    for (let i = 0; i < spikes; i++) {
+      const a = (i / spikes) * Math.PI * 2;
+      const wob =
+        Math.sin(a * (2.0 + dna.chaos) + dna.seed) * (18 + 18 * dna.chaos) +
+        Math.sin(a * (5.0 + dna.drift) - dna.seed * 0.7) * (10 + 12 * dna.drift);
+      const r = baseR + wob;
+      pts.push({ a, r });
+    }
+    return pts;
   }
 
   function addLimb(w, col, big = false) {
@@ -500,16 +527,13 @@
     const segCount = big ? randi(18, 30) : randi(12, 20);
     const baseLen = big ? rand(10, 16) : rand(7, 12);
 
-    // spawn position evenly around colony
-    const spawnAng = rand(0, TAU);
+    const spawnAng = rand(0, Math.PI * 2);
     const spawnRad = rand(40, 120);
     let px = col.x + Math.cos(spawnAng) * spawnRad;
     let py = col.y + Math.sin(spawnAng) * spawnRad;
 
-    // random heading
-    let ang = rand(0, TAU);
+    let ang = rand(0, Math.PI * 2);
 
-    // color patterns
     const paletteShift = rand(-160, 160);
     const hueBase = (col.dna.hue + paletteShift + 360) % 360;
 
@@ -520,20 +544,10 @@
       width: big ? rand(7, 12) : rand(4.4, 7.2),
       speed: big ? rand(0.36, 0.78) : rand(0.48, 1.08),
       turn: rand(0.010, 0.024) * col.dna.chaos,
-      phase: rand(0, TAU),
+      phase: rand(0, Math.PI * 2),
 
-      // ✅ balanced steering fields (prevents drift bias)
       orbitDir: Math.random() < 0.5 ? -1 : 1,
       roamBias: rand(0.10, 0.28),
-
-      // per-worm wander state (critical)
-      wanderA: rand(0, TAU),
-      wanderV: rand(-0.85, 0.85),
-      wanderT: rand(0.9, 2.4),
-
-      // per-worm orbit anchor around colony center
-      homePhase: rand(0, TAU),
-      seed: Math.floor(Math.random() * 1e9),
 
       pat: {
         stripe: Math.random() < 0.75,
@@ -547,7 +561,6 @@
       segs: [],
       isBoss: false,
       special: special || null,
-
       breath: [],
     };
 
@@ -604,22 +617,26 @@
   }
 
   // =========================
-  // Tiny turbulence field (SAFE: returns small symmetric offset, not an angle target)
+  // Flow field
   // =========================
-  function fieldJitter(x, y, time) {
-    const t = time * 0.00035;
-    const nx = x * 0.0020;
-    const ny = y * 0.0020;
-    // small bounded value in [-1..1]
-    return (
-      Math.sin(nx + t) * 0.55 +
-      Math.cos(ny - t * 1.3) * 0.45 +
-      Math.sin((nx + ny) * 0.7 + t * 1.8) * 0.35
-    );
+  function flowAngle(x, y, time) {
+    const t = time * 0.00025;
+    const nx = x * 0.0022;
+    const ny = y * 0.0022;
+    const a =
+      Math.sin(nx + t) * 1.2 +
+      Math.cos(ny - t * 1.3) * 1.0 +
+      Math.sin((nx + ny) * 0.7 + t * 1.8) * 0.8;
+    return a;
+  }
+
+  function lerpAngle(a, b, t) {
+    const d = (((b - a) % (Math.PI * 2)) + Math.PI * 3) % (Math.PI * 2) - Math.PI;
+    return a + d * t;
   }
 
   // =========================
-  // Worm drawing (more detailed patterns)
+  // Drawing
   // =========================
   function strokePath(points, width, color, glow = null) {
     if (glow) {
@@ -662,25 +679,23 @@
     if (!isInteracting) {
       for (let i = 0; i < pts.length; i += 2) {
         const p = pts[i];
-        const tt = i / Math.max(1, pts.length - 1);
+        const t = i / Math.max(1, pts.length - 1);
         const stripeOn = w.pat.stripe && (i % 6 < 3);
         const useHue = (w.pat.dual && stripeOn) ? w.pat.hue2 : w.hue;
 
-        const r = Math.max(1.6, w.width * (0.30 + 0.18 * Math.sin(tt * 10 + w.phase)));
+        const r = Math.max(1.6, w.width * (0.30 + 0.18 * Math.sin(t * 10 + w.phase)));
         ctx.fillStyle = `hsla(${useHue}, 95%, ${stripeOn ? 68 : 62}%, .85)`;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, r, 0, TAU);
+        ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
         ctx.fill();
 
         if (w.pat.dots && (i % 8 === 0)) {
           ctx.fillStyle = `hsla(${(useHue + 30) % 360}, 95%, 76%, .75)`;
           ctx.beginPath();
           ctx.arc(
-            p.x + Math.sin(tt * 8 + time * 0.003) * 2,
-            p.y + Math.cos(tt * 8 + time * 0.003) * 2,
-            r * 0.55,
-            0,
-            TAU
+            p.x + Math.sin(t * 8 + time * 0.003) * 2,
+            p.y + Math.cos(t * 8 + time * 0.003) * 2,
+            r * 0.55, 0, Math.PI * 2
           );
           ctx.fill();
         }
@@ -718,8 +733,7 @@
         ctx.quadraticCurveTo(
           base.x + Math.cos(baseAng) * (L.len * 0.55),
           base.y + Math.sin(baseAng) * (L.len * 0.55),
-          lx,
-          ly
+          lx, ly
         );
         ctx.stroke();
       }
@@ -731,23 +745,20 @@
       for (const p of w.breath) {
         ctx.fillStyle = `hsla(${p.h}, 95%, 65%, ${p.a})`;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, p.r, 0, TAU);
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
         ctx.fill();
       }
       ctx.globalCompositeOperation = "source-over";
     }
   }
 
-  // =========================
-  // Colony draw (irregular instead of circle)
-  // =========================
   function aura(x, y, r, hue, a) {
     const g = ctx.createRadialGradient(x, y, 0, x, y, r);
     g.addColorStop(0, `hsla(${hue},95%,65%,${a})`);
     g.addColorStop(1, `hsla(${hue},95%,65%,0)`);
     ctx.fillStyle = g;
     ctx.beginPath();
-    ctx.arc(x, y, r, 0, TAU);
+    ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.fill();
   }
 
@@ -781,7 +792,7 @@
       ctx.strokeStyle = `hsla(${hue}, 95%, 65%, .55)`;
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(col.x, col.y, 105 * col.dna.aura, 0, TAU);
+      ctx.arc(col.x, col.y, 105 * col.dna.aura, 0, Math.PI * 2);
       ctx.stroke();
     }
 
@@ -790,7 +801,7 @@
       ctx.strokeStyle = `hsla(${hh}, 92%, 62%, ${s.a})`;
       ctx.lineWidth = s.w;
       ctx.beginPath();
-      ctx.arc(col.x, col.y, s.r, 0, TAU);
+      ctx.arc(col.x, col.y, s.r, 0, Math.PI * 2);
       ctx.stroke();
     }
 
@@ -802,82 +813,44 @@
   }
 
   // =========================
-  // Worm behavior (FIXED: no directional bias)
+  // Worm behavior
   // =========================
   function wormBehavior(col, w, time, dt) {
-    dt = Number.isFinite(dt) ? dt : 1 / 60;
-
     const head = w.segs[0];
-    if (!head) return;
-
-    // ensure steering state exists (older worms safety)
-    if (w.orbitDir !== 1 && w.orbitDir !== -1) w.orbitDir = Math.random() < 0.5 ? -1 : 1;
-    if (!Number.isFinite(w.roamBias)) w.roamBias = rand(0.10, 0.28);
-    if (!Number.isFinite(w.wanderA)) w.wanderA = rand(0, TAU);
-    if (!Number.isFinite(w.wanderV)) w.wanderV = rand(-0.85, 0.85);
-    if (!Number.isFinite(w.wanderT)) w.wanderT = rand(0.9, 2.4);
-    if (!Number.isFinite(w.homePhase)) w.homePhase = rand(0, TAU);
-    if (!Number.isFinite(w.seed)) w.seed = Math.floor(Math.random() * 1e9);
-    if (!w.breath) w.breath = [];
-
     const freezeSlow = col.freezeT > 0 ? 0.55 : 1.0;
 
-    // --- wander update (symmetric, no drift) ---
-    w.wanderT -= dt;
-    if (w.wanderT <= 0) {
-      w.wanderT = rand(0.9, 2.4);
-      w.wanderV = clamp(w.wanderV + rand(-0.8, 0.8), -1.6, 1.6);
-    }
-    w.wanderA = wrapAngle(w.wanderA + w.wanderV * dt);
+    const jitter = Math.sin(time * 0.002 + w.phase) * 0.12;
+    const field = flowAngle(head.x, head.y, time);
 
-    // --- per-worm moving "home point" around colony (prevents stampede direction) ---
-    const baseR = 85 + 85 * col.dna.aura + (w.isBoss ? 95 : 0);
-    const spin = (0.00022 + 0.00014 * col.dna.drift) * w.orbitDir;
-    const wob = Math.sin(time * 0.0011 + w.homePhase) * 38 + Math.sin(time * 0.0007 + w.seed * 0.00001) * 22;
-    const R = Math.max(55, baseR + wob);
+    const dx = col.x - head.x;
+    const dy = col.y - head.y;
+    const toward = Math.atan2(dy, dx);
 
-    const homeAng = w.homePhase + time * spin + Math.sin(time * 0.0016 + w.phase) * 0.35;
-    const tx = col.x + Math.cos(homeAng) * R;
-    const ty = col.y + Math.sin(homeAng) * R;
+    const orbit = toward + w.orbitDir * (0.75 + 0.35 * Math.sin(time * 0.001 + w.phase));
+    const desired =
+      (w.type === "DRIFTER")
+        ? lerpAngle(toward, field, w.roamBias)
+        : (w.type === "ORBITER")
+          ? lerpAngle(orbit, field, w.roamBias + 0.08)
+          : lerpAngle(lerpAngle(toward, orbit, 0.5), field, w.roamBias + 0.10);
 
-    const towardHome = Math.atan2(ty - head.y, tx - head.x);
+    const turnAmt = w.turn * (0.9 + 0.25 * Math.sin(time * 0.001 + w.phase));
+    head.a = lerpAngle(head.a, desired, clamp(turnAmt * 9.0, 0.06, 0.22));
+    head.a += (Math.random() - 0.5) * turnAmt + jitter * 0.55;
 
-    // --- type behavior (balanced) ---
-    let desired = towardHome;
-
-    if (w.type === "ORBITER") {
-      desired = towardHome + w.orbitDir * (0.75 + 0.25 * Math.sin(time * 0.001 + w.phase));
-    } else if (w.type === "HUNTER") {
-      desired = towardHome + Math.sin(time * 0.003 + w.phase) * 0.35;
-    }
-
-    // add wander + tiny symmetric turbulence (NOT a target angle)
-    const turb = fieldJitter(head.x, head.y, time) * 0.10;
-    desired = wrapAngle(desired + (w.wanderA - 0) * (0.08 + w.roamBias) + turb);
-
-    // turn + move
-    const turnAmt = clamp(w.turn * (0.9 + 0.25 * Math.sin(time * 0.001 + w.phase)), 0.006, 0.09);
-    head.a = lerpAngle(head.a, desired, clamp(turnAmt * 10.0, 0.08, 0.25));
-
-    // movement
     const boost = w.isBoss ? 1.6 : 1.0;
     const sp = w.speed * 2.15 * boost * freezeSlow;
     head.x += Math.cos(head.a) * sp;
     head.y += Math.sin(head.a) * sp;
 
-    // leash to colony (smooth)
-    const dx = head.x - col.x;
-    const dy = head.y - col.y;
-    const d = Math.hypot(dx, dy);
-    const leash = 320 + 80 * col.dna.aura + (w.isBoss ? 70 : 0);
+    const d = Math.hypot(head.x - col.x, head.y - col.y);
+    const leash = 300 + 65 * col.dna.aura;
     if (d > leash) {
-      const back = Math.atan2(col.y - head.y, col.x - head.x);
-      head.a = lerpAngle(head.a, back, 0.22);
-      head.x = col.x + dx * 0.92;
-      head.y = col.y + dy * 0.92;
+      head.x = col.x + (head.x - col.x) * 0.92;
+      head.y = col.y + (head.y - col.y) * 0.92;
+      head.a = lerpAngle(head.a, toward, 0.25);
     }
 
-    // segment follow
     for (let i = 1; i < w.segs.length; i++) {
       const prev = w.segs[i - 1];
       const seg = w.segs[i];
@@ -894,7 +867,6 @@
       seg.a = ang;
     }
 
-    // FIRE DOGE breath (every 8-14 sec)
     if (w.special === "FIRE_DOGE") {
       if (!w.__nextBreath) w.__nextBreath = time + rand(8000, 14000);
 
@@ -933,10 +905,15 @@
   }
 
   // =========================
-  // Mutations (more variety)
+  // Mutations
   // =========================
   let mutTimer = 0;
   let spawnTimer = 0;
+
+  function addColonyMutation(c, msg) {
+    c.muts.unshift(msg);
+    if (c.muts.length > 14) c.muts.length = 14; // cap
+  }
 
   function mutateRandom() {
     const c = colonies[randi(0, colonies.length - 1)];
@@ -969,8 +946,11 @@
     }
 
     pushLog("mut", msg);
+    addColonyMutation(c, msg);
     playSfx("mut", 1);
     if (Math.random() < 0.25) shockwave(c, 0.9);
+
+    if (c === colonies[selected]) updateInspector();
   }
 
   function maybeSpawnWorms(dt) {
@@ -997,7 +977,7 @@
   function trySplitByMcap() {
     while (mcap >= nextSplitAt && colonies.length < MAX_COLONIES) {
       const base = colonies[0];
-      const ang = rand(0, TAU);
+      const ang = rand(0, Math.PI * 2);
       const dist = rand(260, 460);
       const nc = newColony(
         base.x + Math.cos(ang) * dist,
@@ -1071,56 +1051,20 @@
     if (btn) btn.addEventListener("click", () => { ensureAudio(); fn(); });
   }
 
-  bind("feed", () => {
-    volume += rand(20, 90);
-    mcap += rand(120, 460);
-  });
-
-  bind("smallBuy", () => {
-    buyers += 1;
-    const dv = rand(180, 900);
-    const dm = rand(900, 3200);
-    volume += dv;
-    mcap += dm;
-  });
-
-  bind("whaleBuy", () => {
-    const b = randi(2, 5);
-    const dv = rand(2500, 8500);
-    const dm = rand(9000, 22000);
-    buyers += b;
-    volume += dv;
-    mcap += dm;
-    shockwave(colonies[0], 1.2);
-  });
-
-  bind("sell", () => {
-    const dv = rand(600, 2600);
-    const dm = rand(2200, 9000);
-    volume = Math.max(0, volume - dv);
-    mcap = Math.max(0, mcap - dm);
-  });
-
-  bind("storm", () => {
-    const dv = rand(5000, 18000);
-    const dm = rand(2000, 8000);
-    volume += dv;
-    mcap += dm;
-    shockwave(colonies[0], 1.0);
-  });
-
+  bind("feed", () => { volume += rand(20, 90); mcap += rand(120, 460); });
+  bind("smallBuy", () => { buyers += 1; volume += rand(180, 900); mcap += rand(900, 3200); });
+  bind("whaleBuy", () => { buyers += randi(2, 5); volume += rand(2500, 8500); mcap += rand(9000, 22000); shockwave(colonies[0], 1.2); });
+  bind("sell", () => { volume = Math.max(0, volume - rand(600, 2600)); mcap = Math.max(0, mcap - rand(2200, 9000)); });
+  bind("storm", () => { volume += rand(5000, 18000); mcap += rand(2000, 8000); shockwave(colonies[0], 1.0); });
   bind("mutate", () => mutateRandom());
-
   bind("focus", () => {
     focusOn = !focusOn;
     const btn = $("focusBtn");
     if (btn) btn.textContent = `Focus: ${focusOn ? "On" : "Off"}`;
     if (focusOn) centerOnSelected(false);
   });
-
   bind("zoomIn", () => (zoom = clamp(zoom * 1.12, 0.55, 2.8)));
   bind("zoomOut", () => (zoom = clamp(zoom * 0.88, 0.55, 2.8)));
-
   bind("capture", () => {
     try {
       const url = canvas.toDataURL("image/png");
@@ -1133,8 +1077,41 @@
       pushLog("event", "Capture blocked by iOS — screenshot/share instead");
     }
   });
-
   bind("reset", () => location.reload());
+
+  // =========================
+  // Inspector UI (optional)
+  // =========================
+  function updateInspector() {
+    const c = colonies[selected];
+    if (!c) return;
+
+    if (selName) selName.textContent = `Colony #${selected + 1} • ${c.id}`;
+    if (dnaVal) dnaVal.textContent = makeDnaCode(c);
+    if (tempVal) tempVal.textContent = c.dna.temperament;
+    if (biomeVal) biomeVal.textContent = c.dna.biome;
+    if (styleVal) styleVal.textContent = c.dna.style;
+
+    if (mutList) {
+      mutList.innerHTML = "";
+      const items = (c.muts || []).slice(0, 10);
+      if (!items.length) {
+        const d = document.createElement("div");
+        d.className = "mutItem";
+        d.textContent = "No mutations yet.";
+        mutList.appendChild(d);
+      } else {
+        for (const m of items) {
+          const d = document.createElement("div");
+          d.className = "mutItem";
+          d.textContent = m;
+          mutList.appendChild(d);
+        }
+      }
+    }
+
+    if (inspector) inspector.style.display = ""; // ensure visible if present
+  }
 
   // =========================
   // Stats
@@ -1153,6 +1130,7 @@
   // =========================
   // Main step/render
   // =========================
+  let mutTimer = 0;
   function step(dt, time) {
     ensureBoss();
     trySplitByMcap();
@@ -1168,10 +1146,7 @@
 
       if (c.freezeT > 0) c.freezeT = Math.max(0, c.freezeT - dt);
 
-      for (const s of c.shock) {
-        s.r += s.v;
-        s.a *= 0.962;
-      }
+      for (const s of c.shock) { s.r += s.v; s.a *= 0.962; }
       c.shock = c.shock.filter((s) => s.a > 0.06);
     }
 
@@ -1196,7 +1171,7 @@
   function render(time) {
     ctx.clearRect(0, 0, W, H);
 
-    drawBackground();
+    drawBackground(time);
 
     ctx.save();
     ctx.translate(W / 2, H / 2);
@@ -1204,10 +1179,7 @@
     ctx.translate(camX, camY);
 
     for (const c of colonies) drawColony(c, time);
-
-    for (const c of colonies) {
-      for (const w of c.worms) drawWorm(w, time);
-    }
+    for (const c of colonies) for (const w of c.worms) drawWorm(w, time);
 
     ctx.restore();
 
@@ -1245,10 +1217,9 @@
     resizeCanvas();
     zoomOutToFitAll();
     updateStats();
-
+    updateInspector();
     pushLog("event", "Simulation ready");
     if (toast) toast.textContent = "Loading…";
-
     requestAnimationFrame(tick);
   }
 
