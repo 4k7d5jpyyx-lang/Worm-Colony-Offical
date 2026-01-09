@@ -54,7 +54,7 @@
   const elWorms = $("worms");
   const logEl = $("log");
 
-  // ---------- Log ----------
+  // ---------- Log (cap + spam merge) ----------
   const LOG_CAP = 45;
   let lastLog = { msg: "", t: 0, count: 0 };
   function log(msg, kind = "INFO") {
@@ -74,10 +74,135 @@
     while (logEl.children.length > LOG_CAP) logEl.removeChild(logEl.lastChild);
   }
 
-  // ---------- Canvas sizing (FIX iOS scroll/viewport) ----------
-  let W = 1, H = 1, DPR = 1;
-  let resizeRAF = 0;
+  // ---------- Colony info panel (tap to view traits + mutations) ----------
+  const MUT_CAP_PER_COLONY = 16;
 
+  function ensureColonyPanel() {
+    // Prefer existing elements if you already built UI
+    const existing = $("colonyPanel") || $("colonyInfo");
+    if (existing) return existing;
+
+    const panel = document.createElement("div");
+    panel.id = "colonyPanel";
+    panel.style.cssText = `
+      position:relative;
+      width:100%;
+      box-sizing:border-box;
+      margin-top:12px;
+      padding:12px 12px;
+      border-radius:16px;
+      border:1px solid rgba(255,255,255,.12);
+      background:rgba(0,0,0,.35);
+      backdrop-filter: blur(10px);
+      color:rgba(240,245,255,.92);
+      font: 600 12px/1.25 system-ui, -apple-system, Inter, sans-serif;
+    `;
+
+    panel.innerHTML = `
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+        <div id="colTitle" style="font-weight:800; letter-spacing:.2px;">Colony</div>
+        <div id="colBadge" style="opacity:.85; font-weight:800;"></div>
+      </div>
+      <div id="colTraits" style="margin-top:8px; opacity:.92; font-weight:600;"></div>
+      <div style="margin-top:10px; opacity:.75; font-weight:800; letter-spacing:.25px;">Recent mutations</div>
+      <div id="colMuts" style="margin-top:6px; display:flex; flex-direction:column; gap:6px; max-height:140px; overflow:auto;"></div>
+    `;
+
+    // Try to append under your controls area if present; otherwise append to body (below sim isn't possible from JS)
+    const mount =
+      document.querySelector(".controls") ||
+      document.querySelector(".panel") ||
+      document.querySelector("#controls") ||
+      document.querySelector("main") ||
+      document.body;
+
+    mount.appendChild(panel);
+    return panel;
+  }
+
+  const panelEl = ensureColonyPanel();
+  const panelTitle = panelEl ? panelEl.querySelector("#colTitle") : null;
+  const panelBadge = panelEl ? panelEl.querySelector("#colBadge") : null;
+  const panelTraits = panelEl ? panelEl.querySelector("#colTraits") : null;
+  const panelMuts = panelEl ? panelEl.querySelector("#colMuts") : null;
+
+  function fmtTraitRow(label, value) {
+    return `<span style="opacity:.75">${label}</span> <span style="opacity:.98">${value}</span>`;
+  }
+
+  function updateColonyPanel() {
+    if (!panelEl) return;
+    const c = colonies[selected];
+    if (!c) return;
+
+    const idx = selected + 1;
+    if (panelTitle) panelTitle.textContent = `Colony #${idx}`;
+
+    if (panelBadge) {
+      panelBadge.textContent = `DNA ${c.id}`;
+      panelBadge.style.color = `hsla(${c.dna.hue},95%,70%,.95)`;
+      panelBadge.style.textShadow = `0 0 12px hsla(${c.dna.hue},95%,65%,.35)`;
+    }
+
+    if (panelTraits) {
+      const traits = [
+        fmtTraitRow("Biome:", c.dna.biome),
+        fmtTraitRow("Temper:", c.dna.temperament),
+        fmtTraitRow("Style:", c.dna.style),
+        fmtTraitRow("Chaos:", c.dna.chaos.toFixed(2)),
+        fmtTraitRow("Drift:", c.dna.drift.toFixed(2)),
+        fmtTraitRow("Aura:", c.dna.aura.toFixed(2)),
+        fmtTraitRow("Limbiness:", c.dna.limbiness.toFixed(2)),
+        fmtTraitRow("Hue:", Math.round(c.dna.hue))
+      ];
+      panelTraits.innerHTML =
+        `<div style="display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 14px;">` +
+        traits.map(t => `<div>${t}</div>`).join("") +
+        `</div>`;
+    }
+
+    if (panelMuts) {
+      const muts = c.mutations || [];
+      if (!muts.length) {
+        panelMuts.innerHTML = `<div style="opacity:.7; font-weight:650;">No mutations yet — feed/buy to evolve.</div>`;
+      } else {
+        panelMuts.innerHTML = muts
+          .slice(0, MUT_CAP_PER_COLONY)
+          .map(m => {
+            const hue = m.hue ?? c.dna.hue;
+            return `
+              <div style="
+                padding:8px 10px;
+                border-radius:12px;
+                border:1px solid rgba(255,255,255,.10);
+                background:rgba(0,0,0,.25);
+                box-shadow: 0 0 0 1px rgba(255,255,255,.03) inset;
+              ">
+                <div style="display:flex; justify-content:space-between; gap:10px; align-items:center;">
+                  <div style="font-weight:850; color: hsla(${hue},95%,70%,.95); text-shadow:0 0 10px hsla(${hue},95%,60%,.25);">
+                    ${m.kind}
+                  </div>
+                  <div style="opacity:.6; font-weight:750;">${m.when}</div>
+                </div>
+                <div style="margin-top:4px; opacity:.9; font-weight:650;">${m.msg}</div>
+              </div>
+            `;
+          })
+          .join("");
+      }
+    }
+  }
+
+  function pushColonyMutation(col, kind, msg, hue) {
+    const when = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    col.mutations = col.mutations || [];
+    col.mutations.unshift({ kind, msg, when, hue });
+    if (col.mutations.length > MUT_CAP_PER_COLONY) col.mutations.length = MUT_CAP_PER_COLONY;
+    if (colonies[selected] === col) updateColonyPanel();
+  }
+
+  // ---------- Canvas sizing (iOS safe + performance) ----------
+  let W = 1, H = 1, DPR = 1;
   function resizeCanvas() {
     const rect = canvas.getBoundingClientRect();
     DPR = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
@@ -86,25 +211,25 @@
     canvas.width = Math.floor(W * DPR);
     canvas.height = Math.floor(H * DPR);
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  }
 
+    // rebuild background tiles for new DPR (prevents shimmer)
+    __space = null;
+  }
+  window.addEventListener("resize", resizeCanvas, { passive: true });
+  window.addEventListener("orientationchange", () => setTimeout(resizeCanvas, 120));
+
+  // iOS Safari: viewport changes while scrolling
+  let __resizeRAF = 0;
   function scheduleResize() {
-    cancelAnimationFrame(resizeRAF);
-    resizeRAF = requestAnimationFrame(() => {
-      resizeCanvas();
-    });
+    cancelAnimationFrame(__resizeRAF);
+    __resizeRAF = requestAnimationFrame(resizeCanvas);
   }
-
-  window.addEventListener("resize", scheduleResize, { passive: true });
-  window.addEventListener("orientationchange", () => setTimeout(scheduleResize, 120));
-
-  // iOS Safari: viewport changes during scroll without resize
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", scheduleResize, { passive: true });
     window.visualViewport.addEventListener("scroll", scheduleResize, { passive: true });
   }
 
-  setTimeout(scheduleResize, 0);
+  setTimeout(resizeCanvas, 0);
 
   // ---------- Economy / triggers ----------
   let buyers = 0;
@@ -121,11 +246,18 @@
   }
 
   // ---------- Camera + interaction ----------
-  let camX = 0, camY = 0, zoom = 0.78;
+  let camX = 0, camY = 0, zoom = 0.78; // start zoomed out
   let dragging = false, lastX = 0, lastY = 0;
   let selected = 0;
   let focusOn = false;
+
+  // performance: render "lite" while interacting
   let isInteracting = false;
+
+  // tap-vs-drag detection (fix tap-to-select colonies)
+  let downX = 0, downY = 0, moved = false, downTime = 0;
+  const TAP_PX = 8;     // movement threshold in px
+  const TAP_MS = 350;   // max time to count as a tap
 
   function toWorld(px, py) {
     return {
@@ -141,21 +273,31 @@
       const d = dist2(wx, wy, c.x, c.y);
       if (d < bestD) { bestD = d; best = i; }
     }
-    return (best !== -1 && bestD < 260 * 260) ? best : -1;
+    return (best !== -1 && bestD < 280 * 280) ? best : -1;
   }
 
   canvas.addEventListener("pointerdown", (e) => {
     canvas.setPointerCapture?.(e.pointerId);
     dragging = true;
     isInteracting = true;
+
+    downX = e.clientX; downY = e.clientY;
     lastX = e.clientX; lastY = e.clientY;
+    downTime = performance.now();
+    moved = false;
   }, { passive: true });
 
   canvas.addEventListener("pointermove", (e) => {
     if (!dragging) return;
     const dx = e.clientX - lastX;
     const dy = e.clientY - lastY;
+
+    const totalDx = e.clientX - downX;
+    const totalDy = e.clientY - downY;
+    if (!moved && (Math.abs(totalDx) > TAP_PX || Math.abs(totalDy) > TAP_PX)) moved = true;
+
     lastX = e.clientX; lastY = e.clientY;
+
     camX += dx / zoom;
     camY += dy / zoom;
   }, { passive: true });
@@ -163,12 +305,22 @@
   canvas.addEventListener("pointerup", (e) => {
     dragging = false;
     isInteracting = false;
-    const w = toWorld(e.clientX, e.clientY);
-    const idx = pickColony(w.x, w.y);
-    if (idx !== -1) {
-      selected = idx;
-      log(`Selected Colony #${idx + 1}`, "INFO");
-      if (focusOn) centerOnSelected(true);
+
+    const elapsed = performance.now() - downTime;
+    const totalDx = e.clientX - downX;
+    const totalDy = e.clientY - downY;
+
+    const isTap = !moved && elapsed < TAP_MS && (Math.abs(totalDx) <= TAP_PX && Math.abs(totalDy) <= TAP_PX);
+
+    if (isTap) {
+      const w = toWorld(e.clientX, e.clientY);
+      const idx = pickColony(w.x, w.y);
+      if (idx !== -1) {
+        selected = idx;
+        log(`Selected Colony #${idx + 1}`, "INFO");
+        updateColonyPanel();
+        if (focusOn) centerOnSelected(false);
+      }
     }
   }, { passive: true });
 
@@ -177,15 +329,17 @@
     isInteracting = false;
   }, { passive: true });
 
+  // wheel zoom (desktop)
   canvas.addEventListener("wheel", (e) => {
     e.preventDefault();
     isInteracting = true;
     const k = e.deltaY > 0 ? 0.92 : 1.08;
-    zoom = clamp(zoom * k, 0.52, 2.6);
+    zoom = clamp(zoom * k, 0.6, 2.6);
     clearTimeout(canvas.__wheelTO);
-    canvas.__wheelTO = setTimeout(() => (isInteracting = false), 140);
+    canvas.__wheelTO = setTimeout(() => (isInteracting = false), 120);
   }, { passive: false });
 
+  // double tap center (kept)
   let lastTap = 0;
   canvas.addEventListener("touchend", () => {
     const now = Date.now();
@@ -196,7 +350,11 @@
   function centerOnSelected(smooth = true) {
     const c = colonies[selected];
     if (!c) return;
-    if (!smooth) { camX = -c.x; camY = -c.y; return; }
+    if (!smooth) {
+      camX = -c.x;
+      camY = -c.y;
+      return;
+    }
     camX = lerp(camX, -c.x, 0.18);
     camY = lerp(camY, -c.y, 0.18);
   }
@@ -217,9 +375,9 @@
     const nodes = Array.from({ length: randi(4, 7) }, () => ({
       ox: rand(-70, 70),
       oy: rand(-70, 70),
-      r: rand(55, 130),
+      r: rand(50, 110),
       ph: rand(0, Math.PI * 2),
-      sp: rand(0.35, 1.1)
+      sp: rand(0.4, 1.2)
     }));
 
     return {
@@ -230,15 +388,9 @@
       dna,
       nodes,
       worms: [],
-      shock: []
+      shock: [],
+      mutations: []
     };
-  }
-
-  // spawn worms AROUND the colony (fixes "all move right to center")
-  function spawnPointAround(col, radiusMin, radiusMax) {
-    const a = rand(0, Math.PI * 2);
-    const r = rand(radiusMin, radiusMax);
-    return { x: col.x + Math.cos(a) * r, y: col.y + Math.sin(a) * r, a };
   }
 
   function newWorm(col, big = false) {
@@ -246,10 +398,7 @@
     const segCount = big ? randi(18, 28) : randi(10, 18);
     const baseLen = big ? rand(10, 16) : rand(7, 12);
 
-    const hue = (col.dna.hue + rand(-160, 160) + 360) % 360;
-    const orbitDir = Math.random() < 0.5 ? -1 : 1;
-
-    const sp = spawnPointAround(col, 120, 210);
+    const hue = (col.dna.hue + rand(-140, 140) + 360) % 360;
 
     const w = {
       id: Math.random().toString(16).slice(2, 6),
@@ -257,42 +406,75 @@
       hue,
       width: big ? rand(7, 11) : rand(4.2, 7),
       speed: big ? rand(0.38, 0.75) : rand(0.5, 1.05),
+      turn: rand(0.008, 0.02) * col.dna.chaos,
       phase: rand(0, Math.PI * 2),
       limbs: [],
       segs: [],
       isBoss: false,
 
-      vx: 0,
-      vy: 0,
-      orbitDir,
+      // NEW: independent drift so they don't “rush one way”
+      vx: Math.cos(rand(0, Math.PI * 2)) * rand(0.2, 1.0),
+      vy: Math.sin(rand(0, Math.PI * 2)) * rand(0.2, 1.0),
+
+      orbitDir: Math.random() < 0.5 ? -1 : 1,
+      orbitR: rand(150, 240),
       seedA: rand(-1000, 1000),
       seedB: rand(-1000, 1000),
       wander: rand(0.7, 1.6),
-      flow: rand(0.2, 1.0),
-
-      // NEW: each worm wants its own orbit radius
-      orbitR: rand(150, 240)
+      flow: rand(0.2, 1.0)
     };
 
-    let px = sp.x;
-    let py = sp.y;
-    // initial heading: tangential to circle (so they start orbiting, not seeking right)
-    let ang = sp.a + (Math.PI / 2) * orbitDir;
+    // spawn around colony ring so motion is balanced
+    const a0 = rand(0, Math.PI * 2);
+    const r0 = rand(120, 210);
+    let px = col.x + Math.cos(a0) * r0;
+    let py = col.y + Math.sin(a0) * r0;
+
+    // start tangent (orbit) so they don't all shoot toward center
+    let ang = a0 + (Math.PI / 2) * w.orbitDir;
 
     for (let i = 0; i < segCount; i++) {
       w.segs.push({ x: px, y: py, a: ang, len: baseLen * rand(0.85, 1.22) });
       px -= Math.cos(ang) * baseLen;
       py -= Math.sin(ang) * baseLen;
-      ang += rand(-0.18, 0.18) * col.dna.chaos;
+      ang += rand(-0.3, 0.3) * col.dna.chaos;
     }
 
-    // isotropic initial velocity (NOT biased)
-    const va = rand(0, Math.PI * 2);
-    const vm = rand(0.4, 1.0);
-    w.vx = Math.cos(va) * vm;
-    w.vy = Math.sin(va) * vm;
-
     return w;
+  }
+
+  const colonies = [newColony(0, 0, 150)];
+  colonies[0].worms.push(newWorm(colonies[0], false));
+  colonies[0].worms.push(newWorm(colonies[0], false));
+  colonies[0].worms.push(newWorm(colonies[0], true));
+
+  // ---------- Fit view (zoomed out start) ----------
+  function zoomOutToFitAll() {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    const pad = 520;
+
+    for (const c of colonies) {
+      minX = Math.min(minX, c.x - pad);
+      minY = Math.min(minY, c.y - pad);
+      maxX = Math.max(maxX, c.x + pad);
+      maxY = Math.max(maxY, c.y + pad);
+    }
+
+    const bw = Math.max(240, maxX - minX);
+    const bh = Math.max(240, maxY - minY);
+
+    const fit = Math.min(W / bw, H / bh);
+    zoom = clamp(fit * 0.92, 0.6, 1.6);
+
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    camX = -cx;
+    camY = -cy;
+  }
+
+  // ---------- Events / mechanics ----------
+  function shockwave(col, strength = 1) {
+    col.shock.push({ r: 0, v: 2.6 + strength * 1.2, a: 0.85, w: 2 + strength });
   }
 
   function addLimb(w, col, big = false) {
@@ -306,40 +488,6 @@
     });
   }
 
-  const colonies = [newColony(0, 0, 150)];
-  colonies[0].worms.push(newWorm(colonies[0], false));
-  colonies[0].worms.push(newWorm(colonies[0], false));
-  colonies[0].worms.push(newWorm(colonies[0], true));
-
-  // ---------- Fit view ----------
-  function zoomOutToFitAll() {
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    const pad = 720;
-
-    for (const c of colonies) {
-      minX = Math.min(minX, c.x - pad);
-      minY = Math.min(minY, c.y - pad);
-      maxX = Math.max(maxX, c.x + pad);
-      maxY = Math.max(maxY, c.y + pad);
-    }
-
-    const bw = Math.max(260, maxX - minX);
-    const bh = Math.max(260, maxY - minY);
-
-    const fit = Math.min(W / bw, H / bh);
-    zoom = clamp(fit * 0.90, 0.52, 1.55);
-
-    const cx = (minX + maxX) / 2;
-    const cy = (minY + maxY) / 2;
-    camX = -cx;
-    camY = -cy;
-  }
-
-  // ---------- Events ----------
-  function shockwave(col, strength = 1) {
-    col.shock.push({ r: 0, v: 2.6 + strength * 1.2, a: 0.85, w: 2 + strength });
-  }
-
   function ensureBoss() {
     if (bossSpawned) return;
     if (mcap >= 50000) {
@@ -349,12 +497,12 @@
       boss.width *= 1.6;
       boss.speed *= 0.7;
       boss.hue = 120;
-      boss.orbitR = rand(190, 280);
       for (let i = 0; i < 4; i++) addLimb(boss, c, true);
       c.worms.push(boss);
       bossSpawned = true;
       shockwave(c, 1.4);
       log("Boss worm emerged", "EVENT");
+      pushColonyMutation(c, "BOSS", "A boss worm erupted from the core.", 120);
     }
   }
 
@@ -362,7 +510,7 @@
     while (mcap >= nextSplitAt && colonies.length < MAX_COLONIES) {
       const base = colonies[0];
       const ang = rand(0, Math.PI * 2);
-      const dist = rand(260, 560);
+      const dist = rand(260, 420);
       const nc = newColony(
         base.x + Math.cos(ang) * dist,
         base.y + Math.sin(ang) * dist,
@@ -377,8 +525,10 @@
       colonies.push(nc);
 
       log(`New colony spawned at ${fmt(nextSplitAt)} MC`, "EVENT");
+      pushColonyMutation(nc, "SPLIT", `Colony formed at ${fmt(nextSplitAt)} market cap.`, nc.dna.hue);
       nextSplitAt += MC_STEP;
 
+      // keep view comfortable as new colonies appear
       zoomOutToFitAll();
     }
   }
@@ -392,15 +542,19 @@
     if (r < 0.30) {
       w.hue = (w.hue + rand(30, 140)) % 360;
       log(`Color shift • Worm ${w.id} (Colony #${colonies.indexOf(c) + 1})`, "MUTATION");
+      pushColonyMutation(c, "COLOR", `Worm ${w.id} shifted hue.`, w.hue);
     } else if (r < 0.56) {
       w.speed *= rand(1.05, 1.25);
       log(`Aggression spike • Worm ${w.id}`, "MUTATION");
+      pushColonyMutation(c, "AGGRESSION", `Worm ${w.id} speed increased.`, w.hue);
     } else if (r < 0.78) {
       w.width = clamp(w.width * rand(1.05, 1.25), 3.5, 16);
       log(`Body growth • Worm ${w.id}`, "MUTATION");
+      pushColonyMutation(c, "GROWTH", `Worm ${w.id} body thickened.`, w.hue);
     } else {
       addLimb(w, c, Math.random() < 0.35);
       log(`Limb growth • Worm ${w.id}`, "MUTATION");
+      pushColonyMutation(c, "LIMB", `Worm ${w.id} grew a limb.`, w.hue);
     }
 
     if (Math.random() < 0.22) shockwave(c, 0.9);
@@ -413,6 +567,7 @@
   function maybeSpawnWorms(dt) {
     const g = growthScore();
     const target = clamp(Math.floor(3 + g * 2.2), 3, 80);
+
     const total = colonies.reduce((a, c) => a + c.worms.length, 0);
     if (total >= target) return;
 
@@ -424,6 +579,7 @@
       c.worms.push(newWorm(c, Math.random() < 0.18));
       if (Math.random() < 0.35) shockwave(c, 0.6);
       log("New worm hatched", "INFO");
+      // not logging every hatch to mutations to avoid spam
     }
   }
 
@@ -437,6 +593,8 @@
     volume += rand(20, 90);
     mcap += rand(120, 460);
     log("Feed + nutrients", "INFO");
+    const c = colonies[selected] || colonies[0];
+    pushColonyMutation(c, "NUTRITION", "Nutrients absorbed — growth accelerated.", c.dna.hue);
   });
 
   bind("smallBuy", () => {
@@ -486,8 +644,8 @@
     if (focusOn) centerOnSelected(false);
   });
 
-  bind("zoomIn", () => (zoom = clamp(zoom * 1.12, 0.52, 2.6)));
-  bind("zoomOut", () => (zoom = clamp(zoom * 0.88, 0.52, 2.6)));
+  bind("zoomIn", () => (zoom = clamp(zoom * 1.12, 0.6, 2.6)));
+  bind("zoomOut", () => (zoom = clamp(zoom * 0.88, 0.6, 2.6)));
 
   bind("capture", () => {
     try {
@@ -516,7 +674,7 @@
     }
   }
 
-  // ---------- Better auras ----------
+  // ---------- Rendering helpers ----------
   function aura(x, y, r, hue, a) {
     const g = ctx.createRadialGradient(x, y, 0, x, y, r);
     g.addColorStop(0, `hsla(${hue},95%,72%,${a})`);
@@ -527,7 +685,6 @@
     ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.fill();
 
-    // hot core
     const g2 = ctx.createRadialGradient(x, y, 0, x, y, r * 0.28);
     g2.addColorStop(0, `hsla(${hue},95%,80%,${a * 0.55})`);
     g2.addColorStop(1, `hsla(${hue},95%,68%,0)`);
@@ -535,166 +692,6 @@
     ctx.beginPath();
     ctx.arc(x, y, r * 0.28, 0, Math.PI * 2);
     ctx.fill();
-  }
-
-  // ---------- Background + grid (pixel-snapped to reduce shimmer) ----------
-  function drawBackground(time) {
-    const halfW = (W / 2) / zoom;
-    const halfH = (H / 2) / zoom;
-    const minX = -camX - halfW;
-    const maxX = -camX + halfW;
-    const minY = -camY - halfH;
-    const maxY = -camY + halfH;
-
-    // bigger grid
-    const GRID = 240;
-    const SUB = GRID / 2;
-
-    // pixel snap in world units
-    const snap = 0.5 / zoom;
-
-    const gridAlpha = clamp(0.12 + (zoom - 0.7) * 0.07, 0.05, 0.16);
-    const subAlpha  = gridAlpha * 0.5;
-
-    ctx.lineWidth = 1 / zoom;
-
-    let x0 = Math.floor(minX / GRID) * GRID;
-    let x1 = Math.ceil(maxX / GRID) * GRID;
-    let y0 = Math.floor(minY / GRID) * GRID;
-    let y1 = Math.ceil(maxY / GRID) * GRID;
-
-    ctx.strokeStyle = `rgba(255,255,255,${gridAlpha})`;
-    ctx.beginPath();
-    for (let x = x0; x <= x1; x += GRID) {
-      const xx = Math.round(x) + snap;
-      ctx.moveTo(xx, y0);
-      ctx.lineTo(xx, y1);
-    }
-    for (let y = y0; y <= y1; y += GRID) {
-      const yy = Math.round(y) + snap;
-      ctx.moveTo(x0, yy);
-      ctx.lineTo(x1, yy);
-    }
-    ctx.stroke();
-
-    if (!isInteracting) {
-      ctx.strokeStyle = `rgba(255,255,255,${subAlpha})`;
-      ctx.beginPath();
-
-      let sx0 = Math.floor(minX / SUB) * SUB;
-      let sx1 = Math.ceil(maxX / SUB) * SUB;
-      let sy0 = Math.floor(minY / SUB) * SUB;
-      let sy1 = Math.ceil(maxY / SUB) * SUB;
-
-      for (let x = sx0; x <= sx1; x += SUB) {
-        if (Math.abs((x % GRID + GRID) % GRID) < 0.001) continue;
-        const xx = Math.round(x) + snap;
-        ctx.moveTo(xx, sy0);
-        ctx.lineTo(xx, sy1);
-      }
-      for (let y = sy0; y <= sy1; y += SUB) {
-        if (Math.abs((y % GRID + GRID) % GRID) < 0.001) continue;
-        const yy = Math.round(y) + snap;
-        ctx.moveTo(sx0, yy);
-        ctx.lineTo(sx1, yy);
-      }
-      ctx.stroke();
-    }
-
-    // nebula haze
-    if (!isInteracting) {
-      const NT = 820;
-      const ntx0 = Math.floor(minX / NT);
-      const ntx1 = Math.ceil(maxX / NT);
-      const nty0 = Math.floor(minY / NT);
-      const nty1 = Math.ceil(maxY / NT);
-
-      ctx.save();
-      ctx.globalCompositeOperation = "lighter";
-      for (let ty = nty0; ty <= nty1; ty++) {
-        for (let tx = ntx0; tx <= ntx1; tx++) {
-          const h = hash2(tx, ty, 9);
-          if (h < 0.55) continue;
-
-          const cx = (tx + hash2(tx, ty, 10)) * NT;
-          const cy = (ty + hash2(tx, ty, 11)) * NT;
-
-          const hue = 190 + hash2(tx, ty, 12) * 140;
-          const rad = 520 + hash2(tx, ty, 13) * 900;
-          const a = 0.05 + hash2(tx, ty, 14) * 0.08;
-
-          const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, rad);
-          g.addColorStop(0, `hsla(${hue},90%,60%,${a})`);
-          g.addColorStop(1, `hsla(${hue},90%,60%,0)`);
-          ctx.fillStyle = g;
-          ctx.beginPath();
-          ctx.arc(cx, cy, rad, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      }
-      ctx.restore();
-    }
-
-    // stars
-    const TILE = 320;
-    const baseStars = isInteracting ? 2 : 7;
-    const brightStars = isInteracting ? 0 : 1;
-
-    const tx0 = Math.floor(minX / TILE);
-    const tx1 = Math.ceil(maxX / TILE);
-    const ty0 = Math.floor(minY / TILE);
-    const ty1 = Math.ceil(maxY / TILE);
-
-    ctx.save();
-    ctx.globalCompositeOperation = "source-over";
-
-    for (let ty = ty0; ty <= ty1; ty++) {
-      for (let tx = tx0; tx <= tx1; tx++) {
-        for (let k = 0; k < baseStars; k++) {
-          const hx = hash2(tx, ty, k * 11 + 1);
-          const hy = hash2(tx, ty, k * 11 + 2);
-          const hs = hash2(tx, ty, k * 11 + 3);
-
-          const sx = (tx + hx) * TILE;
-          const sy = (ty + hy) * TILE;
-
-          const tw = 0.65 + 0.35 * Math.sin(time * 0.001 + (tx * 13 + ty * 7 + k) * 0.9);
-          const a = (0.22 + 0.60 * hs) * tw;
-
-          const r = 0.6 + hs * 1.25;
-          ctx.fillStyle = `rgba(255,255,255,${a * (isInteracting ? 0.55 : 0.85)})`;
-          ctx.beginPath();
-          ctx.arc(sx, sy, r, 0, Math.PI * 2);
-          ctx.fill();
-        }
-
-        for (let b = 0; b < brightStars; b++) {
-          const hb = hash2(tx, ty, 99 + b);
-          if (hb < 0.88) continue;
-          const bx = (tx + hash2(tx, ty, 101 + b)) * TILE;
-          const by = (ty + hash2(tx, ty, 102 + b)) * TILE;
-          const br = 1.8 + hash2(tx, ty, 103 + b) * 2.2;
-          const ba = 0.35 + hash2(tx, ty, 104 + b) * 0.35;
-
-          ctx.save();
-          ctx.globalCompositeOperation = "lighter";
-          const g = ctx.createRadialGradient(bx, by, 0, bx, by, br * 10);
-          g.addColorStop(0, `rgba(255,255,255,${ba * 0.35})`);
-          g.addColorStop(1, `rgba(255,255,255,0)`);
-          ctx.fillStyle = g;
-          ctx.beginPath();
-          ctx.arc(bx, by, br * 10, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.restore();
-
-          ctx.fillStyle = `rgba(255,255,255,${ba})`;
-          ctx.beginPath();
-          ctx.arc(bx, by, br, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      }
-    }
-    ctx.restore();
   }
 
   function irregularBlob(col, time) {
@@ -707,8 +704,7 @@
         const n = col.nodes[i];
         const x = col.x + n.ox + Math.sin(time * 0.001 * n.sp + n.ph) * 12;
         const y = col.y + n.oy + Math.cos(time * 0.001 * n.sp + n.ph) * 12;
-
-        aura(x, y, n.r * 1.30, (baseHue + i * 16) % 360, 0.22);
+        aura(x, y, n.r * 1.35, (baseHue + i * 16) % 360, 0.22);
         aura(x, y, n.r * 0.85, (baseHue + i * 22 + 45) % 360, 0.13);
       }
       ctx.restore();
@@ -798,27 +794,26 @@
     }
   }
 
-  // ---------- FIX: orbit-drive worms (no “seek right” bias) ----------
+  // ---------- Worm behavior (orbit-drive so they don’t “rush right”) ----------
   function wormBehavior(col, w, time, dt) {
     const head = w.segs[0];
 
     const dx = head.x - col.x;
     const dy = head.y - col.y;
     const d = Math.max(1, hypot(dx, dy));
-    const nx = dx / d; // outward normal
+    const nx = dx / d;
     const ny = dy / d;
 
-    // tangent for orbiting around colony
     const tx = -ny * w.orbitDir;
     const ty = nx * w.orbitDir;
 
-    // keep near preferred orbit radius (in/out correction)
-    const err = (w.orbitR - d); // positive = too far in, negative = too far out
+    const err = (w.orbitR - d);
     const corr = clamp(err / 120, -1, 1);
 
-    // zero-mean flow + wander (no global drift)
-    const fx = Math.sin((head.y + w.seedA) * 0.002 + time * 0.00055) * 0.7 + Math.cos((head.x + w.seedB) * 0.002 - time * 0.0005) * 0.7;
-    const fy = Math.cos((head.x + w.seedA) * 0.002 + time * 0.00055) * 0.7 + Math.sin((head.y + w.seedB) * 0.002 - time * 0.0005) * 0.7;
+    const fx = Math.sin((head.y + w.seedA) * 0.002 + time * 0.00055) * 0.7
+             + Math.cos((head.x + w.seedB) * 0.002 - time * 0.0005) * 0.7;
+    const fy = Math.cos((head.x + w.seedA) * 0.002 + time * 0.00055) * 0.7
+             + Math.sin((head.y + w.seedB) * 0.002 - time * 0.0005) * 0.7;
 
     const wa = Math.sin(time * 0.0012 + w.phase) * w.wander;
     const wx = Math.cos(wa);
@@ -826,7 +821,6 @@
 
     let dirX = 0, dirY = 0;
 
-    // orbit-first so they circle instead of marching to one side
     if (w.type === "DRIFTER") {
       dirX = tx * 0.85 + (-nx) * (0.20 * corr) + fx * 0.40 * w.flow + wx * 0.28;
       dirY = ty * 0.85 + (-ny) * (0.20 * corr) + fy * 0.40 * w.flow + wy * 0.28;
@@ -834,7 +828,6 @@
       dirX = tx * 1.05 + (-nx) * (0.28 * corr) + fx * 0.28 * w.flow + wx * 0.14;
       dirY = ty * 1.05 + (-ny) * (0.28 * corr) + fy * 0.28 * w.flow + wy * 0.14;
     } else {
-      // Hunter: orbit + occasional “bite” inward then back out
       const bite = Math.sin(time * 0.003 + w.phase) * 0.55;
       dirX = tx * 0.90 + (-nx) * (0.34 * corr + 0.06 * bite) + fx * 0.35 * w.flow + wx * 0.20;
       dirY = ty * 0.90 + (-ny) * (0.34 * corr + 0.06 * bite) + fy * 0.35 * w.flow + wy * 0.20;
@@ -846,7 +839,6 @@
     const boost = w.isBoss ? 2.0 : 1.0;
     const baseSpd = w.speed * 2.1 * boost;
 
-    // target velocity
     const targetVX = dirX * baseSpd;
     const targetVY = dirY * baseSpd;
 
@@ -854,7 +846,6 @@
     w.vx = lerp(w.vx, targetVX, steer);
     w.vy = lerp(w.vy, targetVY, steer);
 
-    // mild damping
     w.vx *= 0.995;
     w.vy *= 0.995;
 
@@ -862,17 +853,14 @@
     head.y += w.vy;
     head.a = Math.atan2(w.vy, w.vx);
 
-    // keep within a soft max radius
     const maxR = 360;
     if (d > maxR) {
       head.x = col.x + nx * maxR;
       head.y = col.y + ny * maxR;
-      // nudge tangent so it slides along boundary instead of drifting outward
       w.vx = tx * baseSpd * 0.9;
       w.vy = ty * baseSpd * 0.9;
     }
 
-    // follow segments
     for (let i = 1; i < w.segs.length; i++) {
       const prev = w.segs[i - 1];
       const seg = w.segs[i];
@@ -890,24 +878,210 @@
     }
   }
 
-  // ---------- Step / Render ----------
-  function updateStats() {
-    if (elBuyers) elBuyers.textContent = String(buyers);
-    if (elVolume) elVolume.textContent = fmt(volume);
-    if (elMcap) elMcap.textContent = fmt(mcap);
-    if (elColonies) elColonies.textContent = String(colonies.length);
-    if (elWorms) {
-      const total = colonies.reduce((a, c) => a + c.worms.length, 0);
-      elWorms.textContent = String(total);
-    }
+  // ===============================
+  // SPACE BACKGROUND + STABLE GRID (no shimmer on iOS)
+  // ===============================
+  let __space = null;
+
+  function initSpace() {
+    __space = {
+      stars: [
+        makeStarLayer(220, 0.10, 0.22), // far
+        makeStarLayer(160, 0.18, 0.38), // mid
+        makeStarLayer(110, 0.28, 0.60)  // near
+      ],
+      nebulas: makeNebulas(5),
+      grid: makeGridTile()
+    };
   }
 
-  let mutTimer2 = 0;
+  function makeStarLayer(count, parallax, alpha) {
+    const arr = [];
+    for (let i = 0; i < count; i++) {
+      arr.push({
+        x: Math.random() * 1e6,
+        y: Math.random() * 1e6,
+        r: 0.6 + Math.random() * 1.8,
+        a: alpha * (0.6 + Math.random() * 0.8),
+        tw: 0.4 + Math.random() * 1.6,
+        ph: Math.random() * Math.PI * 2,
+        p: parallax,
+        tint: Math.random() < 0.12 ? (Math.random() < 0.5 ? "blue" : "pink") : "white"
+      });
+    }
+    return arr;
+  }
 
+  function makeNebulas(k) {
+    const arr = [];
+    for (let i = 0; i < k; i++) {
+      arr.push({
+        x: (Math.random() - 0.5) * 3000,
+        y: (Math.random() - 0.5) * 3000,
+        r: 520 + Math.random() * 900,
+        h: Math.random() * 360,
+        a: 0.08 + Math.random() * 0.10,
+        drift: 0.00008 + Math.random() * 0.00018,
+        ph: Math.random() * Math.PI * 2
+      });
+    }
+    return arr;
+  }
+
+  function makeGridTile() {
+    const tile = document.createElement("canvas");
+    const g = tile.getContext("2d", { alpha: true });
+
+    // world spacing
+    const GRID_W = 240;
+
+    // base tile size in CSS px, scaled at draw time
+    const TILE_PX = 240;
+
+    tile.width = TILE_PX * DPR;
+    tile.height = TILE_PX * DPR;
+    g.setTransform(DPR, 0, 0, DPR, 0, 0);
+    g.clearRect(0, 0, TILE_PX, TILE_PX);
+
+    // subtle minor cross
+    g.strokeStyle = "rgba(255,255,255,0.05)";
+    g.lineWidth = 1;
+    g.beginPath();
+    g.moveTo(0.5, TILE_PX / 2 + 0.5);
+    g.lineTo(TILE_PX + 0.5, TILE_PX / 2 + 0.5);
+    g.moveTo(TILE_PX / 2 + 0.5, 0.5);
+    g.lineTo(TILE_PX / 2 + 0.5, TILE_PX + 0.5);
+    g.stroke();
+
+    // major edges
+    g.strokeStyle = "rgba(255,255,255,0.12)";
+    g.lineWidth = 1;
+    g.beginPath();
+    g.moveTo(0.5, 0.5);
+    g.lineTo(TILE_PX + 0.5, 0.5);
+    g.moveTo(0.5, 0.5);
+    g.lineTo(0.5, TILE_PX + 0.5);
+    g.stroke();
+
+    return { canvas: tile, GRID_W, TILE_PX };
+  }
+
+  function drawSpaceBackground(time) {
+    if (!__space) initSpace();
+
+    ctx.save();
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    // base gradient
+    const bg = ctx.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, "rgba(2,6,10,1)");
+    bg.addColorStop(1, "rgba(3,10,14,1)");
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, W, H);
+
+    // nebulas (galaxy-ish blobs)
+    for (const n of __space.nebulas) {
+      const t = time * n.drift;
+      const nx = (W * 0.5) + (n.x + Math.cos(t + n.ph) * 180) * 0.10 + camX * zoom * 0.02;
+      const ny = (H * 0.45) + (n.y + Math.sin(t + n.ph) * 180) * 0.10 + camY * zoom * 0.02;
+      const r = n.r * 0.22;
+
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      const g = ctx.createRadialGradient(nx, ny, 0, nx, ny, r);
+      g.addColorStop(0, `hsla(${n.h}, 90%, 62%, ${n.a})`);
+      g.addColorStop(0.55, `hsla(${n.h}, 90%, 56%, ${n.a * 0.55})`);
+      g.addColorStop(1, `hsla(${n.h}, 90%, 56%, 0)`);
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(nx, ny, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // star layers
+    for (const layer of __space.stars) {
+      for (const s of layer) {
+        const tw = 0.75 + 0.25 * Math.sin(time * 0.0012 * s.tw + s.ph);
+
+        const sx = (s.x - camX * 1200 * layer.p) % 1e6;
+        const sy = (s.y - camY * 1200 * layer.p) % 1e6;
+
+        const x = (sx / 1e6) * W;
+        const y = (sy / 1e6) * H;
+
+        const rr = s.r * tw;
+        const a = s.a * tw * (isInteracting ? 0.75 : 1);
+
+        if (s.tint === "blue") ctx.fillStyle = `rgba(210,235,255,${a})`;
+        else if (s.tint === "pink") ctx.fillStyle = `rgba(255,225,245,${a})`;
+        else ctx.fillStyle = `rgba(255,255,255,${a})`;
+
+        ctx.beginPath();
+        ctx.arc(x, y, rr, 0, Math.PI * 2);
+        ctx.fill();
+
+        // occasional glow star
+        if (!isInteracting && rr > 1.8 && Math.random() < 0.015) {
+          ctx.save();
+          ctx.globalCompositeOperation = "lighter";
+          const gg = ctx.createRadialGradient(x, y, 0, x, y, rr * 10);
+          gg.addColorStop(0, `rgba(255,255,255,${a * 0.35})`);
+          gg.addColorStop(1, `rgba(255,255,255,0)`);
+          ctx.fillStyle = gg;
+          ctx.beginPath();
+          ctx.arc(x, y, rr * 10, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+      }
+    }
+
+    ctx.restore();
+  }
+
+  function drawGridStable() {
+    if (!__space) initSpace();
+    if (zoom < 0.62) return;
+
+    ctx.save();
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    const { canvas: tile, GRID_W, TILE_PX } = __space.grid;
+
+    const desired = GRID_W * zoom;     // px between major grid repeats
+    if (desired < 24) { ctx.restore(); return; }
+
+    const ps = desired / TILE_PX;
+
+    const pattern = ctx.createPattern(tile, "repeat");
+    if (!pattern) { ctx.restore(); return; }
+
+    const phaseX = (camX * zoom) % desired;
+    const phaseY = (camY * zoom) % desired;
+
+    // Use DOMMatrix if available
+    const m = new DOMMatrix();
+    m.a = ps; m.d = ps;
+    m.e = -phaseX;
+    m.f = -phaseY;
+
+    if (pattern.setTransform) pattern.setTransform(m);
+
+    ctx.globalAlpha = isInteracting ? 0.55 : 1.0;
+    ctx.fillStyle = pattern;
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalAlpha = 1;
+
+    ctx.restore();
+  }
+
+  // ---------- Simulation step ----------
   function step(dt, time) {
     ensureBoss();
     trySplitByMcap();
 
+    // colony drift
     for (const c of colonies) {
       c.vx += rand(-0.02, 0.02) * c.dna.drift;
       c.vy += rand(-0.02, 0.02) * c.dna.drift;
@@ -916,7 +1090,10 @@
       c.x += c.vx;
       c.y += c.vy;
 
-      for (const s of c.shock) { s.r += s.v; s.a *= 0.96; }
+      for (const s of c.shock) {
+        s.r += s.v;
+        s.a *= 0.96;
+      }
       c.shock = c.shock.filter((s) => s.a > 0.06);
     }
 
@@ -926,11 +1103,12 @@
 
     if (focusOn) centerOnSelected(true);
 
-    mutTimer2 += dt;
+    // auto mutations based on activity
+    mutTimer += dt;
     const g = growthScore();
     const mutRate = clamp(2.2 - g * 0.08, 0.4, 2.2);
-    if (mutTimer2 >= mutRate) {
-      mutTimer2 = 0;
+    if (mutTimer >= mutRate) {
+      mutTimer = 0;
       if (Math.random() < 0.65) mutateRandom();
     }
 
@@ -939,33 +1117,26 @@
   }
 
   function render(time) {
-    ctx.clearRect(0, 0, W, H);
-    ctx.save();
+    // SCREEN SPACE background + stable grid (no shimmer)
+    drawSpaceBackground(time);
+    drawGridStable();
 
+    // WORLD SPACE render
+    ctx.save();
     ctx.translate(W / 2, H / 2);
     ctx.scale(zoom, zoom);
     ctx.translate(camX, camY);
-
-    drawBackground(time);
 
     for (let i = 0; i < colonies.length; i++) {
       const c = colonies[i];
 
       irregularBlob(c, time);
 
-      if (!isInteracting) {
-        ctx.save();
-        ctx.globalCompositeOperation = "lighter";
-        aura(c.x, c.y, 190 * c.dna.aura, c.dna.hue, 0.22);
-        aura(c.x, c.y, 125 * c.dna.aura, (c.dna.hue + 40) % 360, 0.13);
-        ctx.restore();
-      }
-
       if (i === selected) {
         ctx.strokeStyle = `hsla(${c.dna.hue}, 95%, 65%, .55)`;
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.arc(c.x, c.y, 110 * c.dna.aura, 0, Math.PI * 2);
+        ctx.arc(c.x, c.y, 115 * c.dna.aura, 0, Math.PI * 2);
         ctx.stroke();
       }
 
@@ -986,11 +1157,13 @@
     dbg.textContent = "JS LOADED ✓ (rendering)";
   }
 
-  // ---------- Main loop ----------
+  // ---------- Main loop (performance throttles) ----------
   let last = performance.now();
+
+  // render at capped FPS
   let renderAccum = 0;
-  const IDLE_FPS = 40;
-  const INTERACT_FPS = 60;
+  const RENDER_FPS = 40;        // try 30 if your phone is older
+  const RENDER_DT = 1 / RENDER_FPS;
 
   function tick(now) {
     const dt = Math.min((now - last) / 1000, 0.05);
@@ -998,11 +1171,8 @@
 
     step(dt, now);
 
-    const fps = isInteracting ? INTERACT_FPS : IDLE_FPS;
-    const targetDt = 1 / fps;
-
     renderAccum += dt;
-    if (renderAccum >= targetDt) {
+    if (renderAccum >= RENDER_DT) {
       renderAccum = 0;
       render(now);
     }
@@ -1015,6 +1185,7 @@
     resizeCanvas();
     zoomOutToFitAll();
     updateStats();
+    updateColonyPanel();
     log("Simulation ready", "INFO");
     requestAnimationFrame(tick);
   }
