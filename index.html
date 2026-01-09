@@ -13,7 +13,7 @@
   <div class="app">
     <header class="topbar">
       <div class="brand">
-        <img class="brandLogo"
+        <img class="brandLogo" id="brandLogo"
           src="https://i.postimg.cc/hGj8JD0V/1614F03F-52AD-453C-8DB1-09A3B29F3469.png"
           alt="Worm Colony Logo" />
         <div class="brandText">
@@ -29,111 +29,74 @@
     </header>
 
     <main class="stack">
-      <!-- SIM -->
+      <!-- SIM CARD -->
       <section class="card simCard">
         <div class="simWrap">
           <canvas id="simCanvas"></canvas>
 
-          <!-- Overlay: colony inspector (tap colony) -->
-          <div class="inspector hidden" id="inspector">
-            <div class="inspectorTop">
-              <div class="inspectorTitle">
-                <span class="pill">Colony</span>
-                <span id="selName">#1</span>
-              </div>
-              <button class="iconBtn" id="closeInspector" title="Close">✕</button>
-            </div>
-
-            <div class="inspectorBody">
-              <div class="grid2">
-                <div class="kv">
-                  <div class="k">DNA</div>
-                  <div class="v mono" id="dnaVal">—</div>
-                </div>
-                <div class="kv">
-                  <div class="k">Temperament</div>
-                  <div class="v" id="tempVal">—</div>
-                </div>
-                <div class="kv">
-                  <div class="k">Biome</div>
-                  <div class="v" id="biomeVal">—</div>
-                </div>
-                <div class="kv">
-                  <div class="k">Style</div>
-                  <div class="v" id="styleVal">—</div>
-                </div>
-              </div>
-
-              <div class="mutBox">
-                <div class="mutHdr">Recent Mutations</div>
-                <div class="mutList" id="mutList"></div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Toast -->
+          <!-- Overlay: debug toast -->
           <div class="toast" id="toast">Loading…</div>
         </div>
 
         <div class="hint">
-          Tap colonies • Drag to pan • Pinch to zoom • Double-tap to center
+          Tap colonies • Drag pan • Pinch zoom • Double tap center
         </div>
       </section>
 
-      <!-- STATS + EVENTS (events below stats like you wanted) -->
+      <!-- STATS + EVENTS -->
       <section class="card statsCard">
-        <div class="statsGrid fancy">
-          <div class="stat glow">
+        <div class="statsGrid">
+          <div class="stat">
             <div class="label">Buyers</div>
             <div class="value" id="buyers">0</div>
-            <div class="spark"></div>
           </div>
-          <div class="stat glow">
+          <div class="stat">
             <div class="label">Volume</div>
             <div class="value" id="volume">$0</div>
-            <div class="spark"></div>
           </div>
-          <div class="stat glow">
+          <div class="stat">
             <div class="label">M Cap</div>
             <div class="value" id="mcap">$0</div>
-            <div class="spark"></div>
           </div>
-          <div class="stat glow">
+          <div class="stat">
             <div class="label">Colonies</div>
             <div class="value" id="colonies">1</div>
-            <div class="spark"></div>
           </div>
-          <div class="stat glow">
+          <div class="stat">
             <div class="label">Worms</div>
             <div class="value" id="worms">0</div>
-            <div class="spark"></div>
           </div>
         </div>
 
-        <div class="eventsBar">
+        <div class="eventsHdr">
           <div class="eventsTitle">
             <span class="eventsDot"></span>
-            Colony Events
+            <span>Colony Events</span>
           </div>
           <div class="eventsHint">Only sim events (mutations, spawns, milestones).</div>
         </div>
 
-        <div class="eventPanel" id="log"></div>
+        <div class="eventLog" id="eventLog" aria-label="Simulation event log"></div>
       </section>
 
       <!-- CONTROLS -->
       <section class="card controlsCard">
         <div class="btnGrid">
           <button class="neonBtn" data-action="feed">Feed</button>
-          <button class="neonBtn alt" data-action="mutate">Mutate</button>
+          <button class="neonBtn alt" data-action="smallBuy">Small Buy</button>
 
-          <button class="neonBtn" data-action="storm">Volume Storm</button>
-          <button class="neonBtn alt" data-action="focus" id="focusBtn">Focus: Off</button>
+          <button class="neonBtn" data-action="whaleBuy">Whale Buy</button>
+          <button class="neonBtn danger" data-action="sell">Sell-off</button>
 
+          <button class="neonBtn alt" data-action="storm">Volume Storm</button>
+          <button class="neonBtn" data-action="mutate">Mutate</button>
+
+          <button class="neonBtn" data-action="focus" id="focusBtn">Focus: Off</button>
           <button class="neonBtn alt" data-action="zoomIn">Zoom +</button>
-          <button class="neonBtn alt" data-action="zoomOut">Zoom −</button>
 
+          <button class="neonBtn alt" data-action="zoomOut">Zoom −</button>
           <button class="neonBtn" data-action="capture">Capture</button>
+
           <button class="neonBtn danger wide" data-action="reset">Reset</button>
         </div>
       </section>
