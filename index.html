@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Worm Colony — $WORM</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+
+  <link rel="stylesheet" href="styles.css" />
+</head>
+
+<body>
+  <div id="app">
+
+    <!-- HEADER -->
+    <header class="header">
+      <div class="title">
+        <strong>Worm Colony</strong>
+        <span>$WORM · LIVE COLONY</span>
+      </div>
+      <div class="simStatus">
+        <span class="dot"></span> Simulation Active
+      </div>
+    </header>
+
+    <!-- SIMULATION (ALWAYS TOP) -->
+    <section class="simulation">
+      <canvas id="simCanvas"></canvas>
+      <div class="hint">
+        Tap colonies • Drag pan • Pinch zoom • Double tap center
+      </div>
+    </section>
+
+    <!-- STATS -->
+    <section class="panel stats">
+      <div><label>Buyers</label><span id="buyers">0</span></div>
+      <div><label>Volume</label><span id="volume">$0</span></div>
+      <div><label>M Cap</label><span id="mcap">$0</span></div>
+      <div><label>Colonies</label><span id="colonies">1</span></div>
+      <div><label>Worms</label><span id="worms">0</span></div>
+    </section>
+
+    <!-- CONTROLS -->
+    <section class="panel controls">
+      <button data-action="feed">Feed</button>
+      <button data-action="smallBuy">Small Buy</button>
+      <button data-action="whaleBuy">Whale Buy</button>
+      <button data-action="sell">Sell-off</button>
+      <button data-action="storm">Volume Storm</button>
+      <button data-action="mutate">Mutate</button>
+      <button data-action="focus">Focus: Off</button>
+      <button data-action="zoomIn">Zoom +</button>
+      <button data-action="zoomOut">Zoom −</button>
+      <button data-action="capture">Capture</button>
+      <button class="danger" data-action="reset">Reset</button>
+    </section>
+
+    <!-- LOG -->
+    <section class="panel log">
+      <strong>Mutation Log</strong>
+      <div id="log"></div>
+    </section>
+
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
