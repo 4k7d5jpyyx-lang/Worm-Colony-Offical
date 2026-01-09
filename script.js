@@ -33,8 +33,9 @@
     const dx = ax - bx, dy = ay - by;
     return dx * dx + dy * dy;
   };
+  const hypot = Math.hypot;
 
-  // small deterministic hashes for stars (stable in world space)
+  // deterministic tile hashing for stars/nebula (stable in world space)
   const fract = (x) => x - Math.floor(x);
   function hash2(ix, iy, salt = 0) {
     const n = Math.sin(ix * 127.1 + iy * 311.7 + salt * 73.3) * 43758.5453123;
@@ -75,11 +76,11 @@
     while (logEl.children.length > LOG_CAP) logEl.removeChild(logEl.lastChild);
   }
 
-  // ---------- Canvas sizing (iOS safe + performance) ----------
+  // ---------- Canvas sizing ----------
   let W = 1, H = 1, DPR = 1;
   function resizeCanvas() {
     const rect = canvas.getBoundingClientRect();
-    DPR = Math.max(1, Math.min(2, window.devicePixelRatio || 1)); // cap DPR for iOS
+    DPR = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
     W = Math.max(1, rect.width);
     H = Math.max(1, rect.height);
     canvas.width = Math.floor(W * DPR);
@@ -105,12 +106,10 @@
   }
 
   // ---------- Camera + interaction ----------
-  let camX = 0, camY = 0, zoom = 0.78; // start more zoomed out
+  let camX = 0, camY = 0, zoom = 0.78;
   let dragging = false, lastX = 0, lastY = 0;
   let selected = 0;
   let focusOn = false;
-
-  // render “lite” while interacting
   let isInteracting = false;
 
   function toWorld(px, py) {
@@ -149,7 +148,6 @@
   canvas.addEventListener("pointerup", (e) => {
     dragging = false;
     isInteracting = false;
-
     const w = toWorld(e.clientX, e.clientY);
     const idx = pickColony(w.x, w.y);
     if (idx !== -1) {
@@ -164,17 +162,15 @@
     isInteracting = false;
   }, { passive: true });
 
-  // wheel zoom (desktop)
   canvas.addEventListener("wheel", (e) => {
     e.preventDefault();
     isInteracting = true;
     const k = e.deltaY > 0 ? 0.92 : 1.08;
-    zoom = clamp(zoom * k, 0.6, 2.6);
+    zoom = clamp(zoom * k, 0.55, 2.6);
     clearTimeout(canvas.__wheelTO);
-    canvas.__wheelTO = setTimeout(() => (isInteracting = false), 120);
+    canvas.__wheelTO = setTimeout(() => (isInteracting = false), 140);
   }, { passive: false });
 
-  // double tap center
   let lastTap = 0;
   canvas.addEventListener("touchend", () => {
     const now = Date.now();
@@ -185,11 +181,7 @@
   function centerOnSelected(smooth = true) {
     const c = colonies[selected];
     if (!c) return;
-    if (!smooth) {
-      camX = -c.x;
-      camY = -c.y;
-      return;
-    }
+    if (!smooth) { camX = -c.x; camY = -c.y; return; }
     camX = lerp(camX, -c.x, 0.18);
     camY = lerp(camY, -c.y, 0.18);
   }
@@ -210,9 +202,9 @@
     const nodes = Array.from({ length: randi(4, 7) }, () => ({
       ox: rand(-70, 70),
       oy: rand(-70, 70),
-      r: rand(50, 110),
+      r: rand(55, 125),
       ph: rand(0, Math.PI * 2),
-      sp: rand(0.4, 1.2)
+      sp: rand(0.35, 1.1)
     }));
 
     return {
@@ -233,12 +225,7 @@
     const baseLen = big ? rand(10, 16) : rand(7, 12);
 
     const hue = (col.dna.hue + rand(-160, 160) + 360) % 360;
-
-    // IMPORTANT: give each worm unique orbit direction + bias so they don’t all align
     const orbitDir = Math.random() < 0.5 ? -1 : 1;
-    const bias = rand(-Math.PI, Math.PI);
-    const wander = rand(0.6, 1.6);   // wander intensity
-    const flow = rand(0.2, 1.0);     // flow-field strength
 
     const w = {
       id: Math.random().toString(16).slice(2, 6),
@@ -246,18 +233,19 @@
       hue,
       width: big ? rand(7, 11) : rand(4.2, 7),
       speed: big ? rand(0.38, 0.75) : rand(0.5, 1.05),
-      turn: rand(0.008, 0.02) * col.dna.chaos,
       phase: rand(0, Math.PI * 2),
       limbs: [],
       segs: [],
       isBoss: false,
 
+      // NEW: velocity steering so no global heading bias
+      vx: rand(-0.6, 0.6),
+      vy: rand(-0.6, 0.6),
       orbitDir,
-      bias,
-      wander,
-      flow,
-      // keep internal “heading momentum” so movement is less “snap to 0 rad”
-      headDrift: rand(-0.4, 0.4)
+      seedA: rand(-1000, 1000),
+      seedB: rand(-1000, 1000),
+      wander: rand(0.6, 1.5),
+      flow: rand(0.2, 1.0)
     };
 
     let px = col.x + rand(-55, 55);
@@ -271,41 +259,11 @@
       ang += rand(-0.3, 0.3) * col.dna.chaos;
     }
 
+    // initialize velocity to match initial heading
+    w.vx = Math.cos(ang) * 0.8;
+    w.vy = Math.sin(ang) * 0.8;
+
     return w;
-  }
-
-  const colonies = [newColony(0, 0, 150)];
-  colonies[0].worms.push(newWorm(colonies[0], false));
-  colonies[0].worms.push(newWorm(colonies[0], false));
-  colonies[0].worms.push(newWorm(colonies[0], true));
-
-  // ---------- Fit view (zoomed out start) ----------
-  function zoomOutToFitAll() {
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    const pad = 520;
-
-    for (const c of colonies) {
-      minX = Math.min(minX, c.x - pad);
-      minY = Math.min(minY, c.y - pad);
-      maxX = Math.max(maxX, c.x + pad);
-      maxY = Math.max(maxY, c.y + pad);
-    }
-
-    const bw = Math.max(240, maxX - minX);
-    const bh = Math.max(240, maxY - minY);
-
-    const fit = Math.min(W / bw, H / bh);
-    zoom = clamp(fit * 0.90, 0.55, 1.55);
-
-    const cx = (minX + maxX) / 2;
-    const cy = (minY + maxY) / 2;
-    camX = -cx;
-    camY = -cy;
-  }
-
-  // ---------- Events / mechanics ----------
-  function shockwave(col, strength = 1) {
-    col.shock.push({ r: 0, v: 2.6 + strength * 1.2, a: 0.85, w: 2 + strength });
   }
 
   function addLimb(w, col, big = false) {
@@ -317,6 +275,40 @@
       ang: rand(-1.3, 1.3),
       wob: rand(0.7, 1.6)
     });
+  }
+
+  const colonies = [newColony(0, 0, 150)];
+  colonies[0].worms.push(newWorm(colonies[0], false));
+  colonies[0].worms.push(newWorm(colonies[0], false));
+  colonies[0].worms.push(newWorm(colonies[0], true));
+
+  // ---------- Fit view ----------
+  function zoomOutToFitAll() {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    const pad = 620;
+
+    for (const c of colonies) {
+      minX = Math.min(minX, c.x - pad);
+      minY = Math.min(minY, c.y - pad);
+      maxX = Math.max(maxX, c.x + pad);
+      maxY = Math.max(maxY, c.y + pad);
+    }
+
+    const bw = Math.max(260, maxX - minX);
+    const bh = Math.max(260, maxY - minY);
+
+    const fit = Math.min(W / bw, H / bh);
+    zoom = clamp(fit * 0.90, 0.52, 1.55);
+
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    camX = -cx;
+    camY = -cy;
+  }
+
+  // ---------- Events / mechanics ----------
+  function shockwave(col, strength = 1) {
+    col.shock.push({ r: 0, v: 2.6 + strength * 1.2, a: 0.85, w: 2 + strength });
   }
 
   function ensureBoss() {
@@ -340,7 +332,7 @@
     while (mcap >= nextSplitAt && colonies.length < MAX_COLONIES) {
       const base = colonies[0];
       const ang = rand(0, Math.PI * 2);
-      const dist = rand(240, 420);
+      const dist = rand(260, 520);
       const nc = newColony(
         base.x + Math.cos(ang) * dist,
         base.y + Math.sin(ang) * dist,
@@ -357,7 +349,6 @@
       log(`New colony spawned at ${fmt(nextSplitAt)} MC`, "EVENT");
       nextSplitAt += MC_STEP;
 
-      // when a new colony appears, gently zoom out so you can see more
       zoomOutToFitAll();
     }
   }
@@ -392,7 +383,6 @@
   function maybeSpawnWorms(dt) {
     const g = growthScore();
     const target = clamp(Math.floor(3 + g * 2.2), 3, 80);
-
     const total = colonies.reduce((a, c) => a + c.worms.length, 0);
     if (total >= target) return;
 
@@ -466,8 +456,8 @@
     if (focusOn) centerOnSelected(false);
   });
 
-  bind("zoomIn", () => (zoom = clamp(zoom * 1.12, 0.55, 2.6)));
-  bind("zoomOut", () => (zoom = clamp(zoom * 0.88, 0.55, 2.6)));
+  bind("zoomIn", () => (zoom = clamp(zoom * 1.12, 0.52, 2.6)));
+  bind("zoomOut", () => (zoom = clamp(zoom * 0.88, 0.52, 2.6)));
 
   bind("capture", () => {
     try {
@@ -496,20 +486,29 @@
     }
   }
 
-  // ---------- Rendering helpers ----------
+  // ---------- Rendering helpers (UPGRADED AURAS) ----------
   function aura(x, y, r, hue, a) {
     const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-    g.addColorStop(0, `hsla(${hue},95%,65%,${a})`);
-    g.addColorStop(1, `hsla(${hue},95%,65%,0)`);
+    g.addColorStop(0, `hsla(${hue},95%,70%,${a})`);
+    g.addColorStop(0.35, `hsla(${hue},95%,62%,${a * 0.55})`);
+    g.addColorStop(1, `hsla(${hue},95%,55%,0)`);
     ctx.fillStyle = g;
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.fill();
+
+    // inner hot core (nicer “energy”)
+    const g2 = ctx.createRadialGradient(x, y, 0, x, y, r * 0.28);
+    g2.addColorStop(0, `hsla(${hue},95%,78%,${a * 0.55})`);
+    g2.addColorStop(1, `hsla(${hue},95%,68%,0)`);
+    ctx.fillStyle = g2;
+    ctx.beginPath();
+    ctx.arc(x, y, r * 0.28, 0, Math.PI * 2);
+    ctx.fill();
   }
 
-  // WORLD-SPACE BACKGROUND: grid + stars (expands with pan/zoom)
+  // WORLD-SPACE BACKGROUND: more “space”
   function drawBackground(time) {
-    // compute world bounds of current view
     const halfW = (W / 2) / zoom;
     const halfH = (H / 2) / zoom;
     const minX = -camX - halfW;
@@ -517,35 +516,26 @@
     const minY = -camY - halfH;
     const maxY = -camY + halfH;
 
-    // GRID: bigger + subtle
-    const GRID = 220;         // main spacing
-    const SUB = GRID / 2;     // sub-lines
+    // Larger grid (subtle)
+    const GRID = 240;
+    const SUB = GRID / 2;
 
-    // fade with zoom so it doesn’t explode when zoomed out
-    const gridAlpha = clamp(0.14 + (zoom - 0.7) * 0.08, 0.06, 0.18);
-    const subAlpha  = gridAlpha * 0.55;
+    const gridAlpha = clamp(0.12 + (zoom - 0.7) * 0.07, 0.05, 0.16);
+    const subAlpha  = gridAlpha * 0.5;
 
-    ctx.lineWidth = 1 / zoom; // keep 1px-ish in world space
+    ctx.lineWidth = 1 / zoom;
     ctx.strokeStyle = `rgba(255,255,255,${gridAlpha})`;
 
-    // draw main vertical lines
     let x0 = Math.floor(minX / GRID) * GRID;
     let x1 = Math.ceil(maxX / GRID) * GRID;
     let y0 = Math.floor(minY / GRID) * GRID;
     let y1 = Math.ceil(maxY / GRID) * GRID;
 
     ctx.beginPath();
-    for (let x = x0; x <= x1; x += GRID) {
-      ctx.moveTo(x, y0);
-      ctx.lineTo(x, y1);
-    }
-    for (let y = y0; y <= y1; y += GRID) {
-      ctx.moveTo(x0, y);
-      ctx.lineTo(x1, y);
-    }
+    for (let x = x0; x <= x1; x += GRID) { ctx.moveTo(x, y0); ctx.lineTo(x, y1); }
+    for (let y = y0; y <= y1; y += GRID) { ctx.moveTo(x0, y); ctx.lineTo(x1, y); }
     ctx.stroke();
 
-    // sub-grid lines (lighter)
     if (!isInteracting) {
       ctx.strokeStyle = `rgba(255,255,255,${subAlpha})`;
       ctx.beginPath();
@@ -554,23 +544,55 @@
       let sy0 = Math.floor(minY / SUB) * SUB;
       let sy1 = Math.ceil(maxY / SUB) * SUB;
       for (let x = sx0; x <= sx1; x += SUB) {
-        // skip if it’s also a main grid line (avoid double brightness)
         if (Math.abs((x % GRID + GRID) % GRID) < 0.001) continue;
-        ctx.moveTo(x, sy0);
-        ctx.lineTo(x, sy1);
+        ctx.moveTo(x, sy0); ctx.lineTo(x, sy1);
       }
       for (let y = sy0; y <= sy1; y += SUB) {
         if (Math.abs((y % GRID + GRID) % GRID) < 0.001) continue;
-        ctx.moveTo(sx0, y);
-        ctx.lineTo(sx1, y);
+        ctx.moveTo(sx0, y); ctx.lineTo(sx1, y);
       }
       ctx.stroke();
     }
 
-    // STARS: tiny white points in world space
-    // Use tile-based deterministic stars so they’re stable while panning.
+    // Nebula haze tiles (very soft)
+    if (!isInteracting) {
+      const NT = 820;
+      const ntx0 = Math.floor(minX / NT);
+      const ntx1 = Math.ceil(maxX / NT);
+      const nty0 = Math.floor(minY / NT);
+      const nty1 = Math.ceil(maxY / NT);
+
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      for (let ty = nty0; ty <= nty1; ty++) {
+        for (let tx = ntx0; tx <= ntx1; tx++) {
+          const h = hash2(tx, ty, 9);
+          if (h < 0.55) continue;
+
+          const cx = (tx + hash2(tx, ty, 10)) * NT;
+          const cy = (ty + hash2(tx, ty, 11)) * NT;
+
+          const hue = 190 + hash2(tx, ty, 12) * 140; // teal->purple
+          const rad = 520 + hash2(tx, ty, 13) * 900;
+          const a = 0.05 + hash2(tx, ty, 14) * 0.08;
+
+          const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, rad);
+          g.addColorStop(0, `hsla(${hue},90%,60%,${a})`);
+          g.addColorStop(1, `hsla(${hue},90%,60%,0)`);
+          ctx.fillStyle = g;
+          ctx.beginPath();
+          ctx.arc(cx, cy, rad, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+      ctx.restore();
+    }
+
+    // Stars (denser + a few bright stars)
     const TILE = 320;
-    const starDensity = isInteracting ? 1 : 3; // fewer while interacting
+    const baseStars = isInteracting ? 2 : 6;      // MORE stars
+    const brightStars = isInteracting ? 0 : 1;    // a few bright ones
+
     const tx0 = Math.floor(minX / TILE);
     const tx1 = Math.ceil(maxX / TILE);
     const ty0 = Math.floor(minY / TILE);
@@ -578,9 +600,10 @@
 
     ctx.save();
     ctx.globalCompositeOperation = "source-over";
+
     for (let ty = ty0; ty <= ty1; ty++) {
       for (let tx = tx0; tx <= tx1; tx++) {
-        for (let k = 0; k < starDensity; k++) {
+        for (let k = 0; k < baseStars; k++) {
           const hx = hash2(tx, ty, k * 11 + 1);
           const hy = hash2(tx, ty, k * 11 + 2);
           const hs = hash2(tx, ty, k * 11 + 3);
@@ -588,39 +611,71 @@
           const sx = (tx + hx) * TILE;
           const sy = (ty + hy) * TILE;
 
-          // brightness twinkle (subtle)
           const tw = 0.65 + 0.35 * Math.sin(time * 0.001 + (tx * 13 + ty * 7 + k) * 0.9);
-          const a = (0.35 + 0.45 * hs) * tw;
+          const a = (0.22 + 0.60 * hs) * tw;
 
-          const r = 0.7 + hs * 1.1; // tiny
-          ctx.fillStyle = `rgba(255,255,255,${a * (isInteracting ? 0.55 : 0.75)})`;
+          const r = 0.6 + hs * 1.25;
+          ctx.fillStyle = `rgba(255,255,255,${a * (isInteracting ? 0.55 : 0.85)})`;
           ctx.beginPath();
           ctx.arc(sx, sy, r, 0, Math.PI * 2);
           ctx.fill();
         }
+
+        for (let b = 0; b < brightStars; b++) {
+          const hb = hash2(tx, ty, 99 + b);
+          if (hb < 0.88) continue;
+          const bx = (tx + hash2(tx, ty, 101 + b)) * TILE;
+          const by = (ty + hash2(tx, ty, 102 + b)) * TILE;
+          const br = 1.8 + hash2(tx, ty, 103 + b) * 2.2;
+          const ba = 0.35 + hash2(tx, ty, 104 + b) * 0.35;
+
+          // tiny bloom
+          ctx.save();
+          ctx.globalCompositeOperation = "lighter";
+          const g = ctx.createRadialGradient(bx, by, 0, bx, by, br * 10);
+          g.addColorStop(0, `rgba(255,255,255,${ba * 0.35})`);
+          g.addColorStop(1, `rgba(255,255,255,0)`);
+          ctx.fillStyle = g;
+          ctx.beginPath();
+          ctx.arc(bx, by, br * 10, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+
+          ctx.fillStyle = `rgba(255,255,255,${ba})`;
+          ctx.beginPath();
+          ctx.arc(bx, by, br, 0, Math.PI * 2);
+          ctx.fill();
+        }
       }
     }
+
     ctx.restore();
   }
 
   function irregularBlob(col, time) {
     const baseHue = col.dna.hue;
 
+    // better glow layering
     if (!isInteracting) {
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
       for (let i = 0; i < col.nodes.length; i++) {
         const n = col.nodes[i];
-        const x = col.x + n.ox + Math.sin(time * 0.001 * n.sp + n.ph) * 10;
-        const y = col.y + n.oy + Math.cos(time * 0.001 * n.sp + n.ph) * 10;
-        aura(x, y, n.r * 1.05, (baseHue + i * 18) % 360, 0.16);
-        aura(x, y, n.r * 0.7, (baseHue + i * 22 + 40) % 360, 0.10);
+        const x = col.x + n.ox + Math.sin(time * 0.001 * n.sp + n.ph) * 12;
+        const y = col.y + n.oy + Math.cos(time * 0.001 * n.sp + n.ph) * 12;
+
+        aura(x, y, n.r * 1.25, (baseHue + i * 16) % 360, 0.20);
+        aura(x, y, n.r * 0.82, (baseHue + i * 22 + 45) % 360, 0.12);
       }
+      ctx.restore();
     } else {
-      aura(col.x, col.y, 140 * col.dna.aura, baseHue, 0.12);
+      aura(col.x, col.y, 170 * col.dna.aura, baseHue, 0.14);
     }
 
-    const R = 130;
-    ctx.strokeStyle = `hsla(${baseHue}, 90%, 65%, .30)`;
-    ctx.lineWidth = 1.6;
+    // outline ring
+    const R = 135;
+    ctx.strokeStyle = `hsla(${baseHue}, 90%, 66%, .30)`;
+    ctx.lineWidth = 1.8;
     ctx.beginPath();
     for (let a = 0; a <= Math.PI * 2 + 0.001; a += Math.PI / 20) {
       const wob =
@@ -638,10 +693,11 @@
   function drawWorm(w, time) {
     const pts = w.segs;
 
+    // upgraded outer bloom
     if (!isInteracting) {
       ctx.globalCompositeOperation = "lighter";
-      ctx.strokeStyle = `hsla(${w.hue}, 92%, 62%, ${w.isBoss ? 0.26 : 0.14})`;
-      ctx.lineWidth = w.width + (w.isBoss ? 8 : 6);
+      ctx.strokeStyle = `hsla(${w.hue}, 92%, 62%, ${w.isBoss ? 0.34 : 0.20})`;
+      ctx.lineWidth = w.width + (w.isBoss ? 10 : 7);
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
       ctx.beginPath();
@@ -650,8 +706,9 @@
       ctx.stroke();
     }
 
+    // core
     ctx.globalCompositeOperation = "source-over";
-    ctx.strokeStyle = `hsla(${w.hue}, 95%, 65%, ${w.isBoss ? 0.98 : 0.9})`;
+    ctx.strokeStyle = `hsla(${w.hue}, 95%, 66%, ${w.isBoss ? 0.98 : 0.92})`;
     ctx.lineWidth = w.width;
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
@@ -660,17 +717,19 @@
     for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
     ctx.stroke();
 
+    // beads
     if (!isInteracting) {
       for (let i = 0; i < pts.length; i += 4) {
         const p = pts[i];
-        const r = Math.max(2.2, w.width * 0.35);
-        ctx.fillStyle = `hsla(${(w.hue + 20) % 360}, 95%, 65%, .82)`;
+        const r = Math.max(2.2, w.width * 0.36);
+        ctx.fillStyle = `hsla(${(w.hue + 18) % 360}, 95%, 70%, .86)`;
         ctx.beginPath();
         ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
         ctx.fill();
       }
     }
 
+    // limbs
     if (w.limbs?.length) {
       ctx.globalCompositeOperation = isInteracting ? "source-over" : "lighter";
       for (const L of w.limbs) {
@@ -684,8 +743,8 @@
         const lx = base.x + Math.cos(baseAng) * L.len;
         const ly = base.y + Math.sin(baseAng) * L.len;
 
-        ctx.strokeStyle = `hsla(${(w.hue + 40) % 360}, 95%, 66%, ${isInteracting ? 0.35 : 0.55})`;
-        ctx.lineWidth = Math.max(2, w.width * 0.35);
+        ctx.strokeStyle = `hsla(${(w.hue + 45) % 360}, 95%, 68%, ${isInteracting ? 0.34 : 0.58})`;
+        ctx.lineWidth = Math.max(2, w.width * 0.36);
         ctx.beginPath();
         ctx.moveTo(base.x, base.y);
         ctx.quadraticCurveTo(
@@ -700,60 +759,90 @@
     }
   }
 
-  // ---------- Simulation step ----------
-  function wormBehavior(col, w, time) {
+  // ---------- FIX: worms no longer “rush right” (velocity steering) ----------
+  function wormBehavior(col, w, time, dt) {
     const head = w.segs[0];
 
-    // flow-field (prevents “all to the right” alignment)
-    // stable-ish per worm, changes slowly with time
-    const flowAng =
-      Math.sin((head.x * 0.003) + time * 0.00045 + w.bias) * 0.9 +
-      Math.cos((head.y * 0.003) - time * 0.00038 + w.bias) * 0.9;
-
-    // wander
-    const wanderAng = Math.sin(time * 0.0012 + w.phase) * 0.65 * w.wander;
-
-    // tiny momentum drift
-    w.headDrift = w.headDrift * 0.985 + (Math.random() - 0.5) * 0.03;
-    const jitter = w.headDrift * 0.12;
-
-    // base heading update
-    head.a += (Math.random() - 0.5) * w.turn + jitter;
-
+    // vector to colony center
     const dx = col.x - head.x;
     const dy = col.y - head.y;
-    const toward = Math.atan2(dy, dx);
+    const d = Math.max(1, hypot(dx, dy));
+    const nx = dx / d;
+    const ny = dy / d;
 
-    // mix target angles (toward + orbit + flow + wander)
-    let target = toward;
+    // tangential direction for orbit
+    const tx = -ny * w.orbitDir;
+    const ty = nx * w.orbitDir;
+
+    // smooth flow field (mean ~0, not biased to +X)
+    const fx = Math.sin((head.y + w.seedA) * 0.002 + time * 0.0005) * 0.6 + Math.cos((head.x + w.seedB) * 0.002 - time * 0.00045) * 0.6;
+    const fy = Math.cos((head.x + w.seedA) * 0.002 + time * 0.0005) * 0.6 + Math.sin((head.y + w.seedB) * 0.002 - time * 0.00045) * 0.6;
+
+    // wander
+    const wa = Math.sin(time * 0.0012 + w.phase) * w.wander;
+    const wx = Math.cos(wa);
+    const wy = Math.sin(wa);
+
+    // choose desired direction by worm type
+    let dirX = 0, dirY = 0;
 
     if (w.type === "DRIFTER") {
-      target = toward + flowAng * 0.55 * w.flow + wanderAng * 0.35;
-      head.a = head.a * 0.92 + target * 0.08;
+      // mostly drift with gentle pull toward colony
+      dirX = nx * 0.55 + tx * 0.20 + fx * 0.55 * w.flow + wx * 0.25;
+      dirY = ny * 0.55 + ty * 0.20 + fy * 0.55 * w.flow + wy * 0.25;
     } else if (w.type === "ORBITER") {
-      const orbit = toward + w.orbitDir * (0.85 + 0.2 * Math.sin(time * 0.0009 + w.phase));
-      target = orbit + flowAng * 0.35 * w.flow + wanderAng * 0.25;
-      head.a = head.a * 0.88 + target * 0.12;
+      // orbit strongly, with slight inward pull so it stays near colony
+      dirX = tx * 0.95 + nx * 0.22 + fx * 0.35 * w.flow + wx * 0.10;
+      dirY = ty * 0.95 + ny * 0.22 + fy * 0.35 * w.flow + wy * 0.10;
     } else {
-      const bite = toward + Math.sin(time * 0.003 + w.phase) * 0.35;
-      target = bite + flowAng * 0.40 * w.flow + wanderAng * 0.25;
-      head.a = head.a * 0.84 + target * 0.16;
+      // hunter: more decisive movement with “bite” wobble
+      const bite = Math.sin(time * 0.003 + w.phase) * 0.55;
+      dirX = nx * (0.78 + bite * 0.08) + tx * 0.30 + fx * 0.40 * w.flow + wx * 0.18;
+      dirY = ny * (0.78 + bite * 0.08) + ty * 0.30 + fy * 0.40 * w.flow + wy * 0.18;
     }
 
+    // normalize desired direction
+    const dl = Math.max(1e-6, hypot(dirX, dirY));
+    dirX /= dl; dirY /= dl;
+
+    // target velocity
     const boost = w.isBoss ? 2.0 : 1.0;
-    head.x += Math.cos(head.a) * w.speed * 2.15 * boost;
-    head.y += Math.sin(head.a) * w.speed * 2.15 * boost;
+    const baseSpd = w.speed * 2.15 * boost;
 
-    // soft boundary keeps them near colony without snapping direction to 0
-    const d = Math.hypot(head.x - col.x, head.y - col.y);
-    if (d > 290) {
-      // gently bend back toward center
-      const back = toward + w.orbitDir * 0.25;
-      head.a = head.a * 0.78 + back * 0.22;
-      head.x = col.x + (head.x - col.x) * 0.94;
-      head.y = col.y + (head.y - col.y) * 0.94;
+    // soft boundary: if too far, increase inward pull (prevents drifting offscreen)
+    const maxR = 320;
+    const pull = clamp((d - 160) / (maxR - 160), 0, 1);
+    const inX = nx * pull;
+    const inY = ny * pull;
+
+    const targetVX = (dirX + inX * 0.85) * baseSpd;
+    const targetVY = (dirY + inY * 0.85) * baseSpd;
+
+    // steer velocity (key fix)
+    const steer = clamp(0.08 + dt * 3.2, 0.06, 0.18);
+    w.vx = lerp(w.vx, targetVX, steer);
+    w.vy = lerp(w.vy, targetVY, steer);
+
+    // tiny damping to prevent runaway drift
+    w.vx *= 0.995;
+    w.vy *= 0.995;
+
+    // move head
+    head.x += w.vx;
+    head.y += w.vy;
+
+    // heading angle for drawing / limb orientation
+    head.a = Math.atan2(w.vy, w.vx);
+
+    // keep within a soft radius without “snap flip”
+    if (d > maxR) {
+      head.x = col.x + (head.x - col.x) * 0.95;
+      head.y = col.y + (head.y - col.y) * 0.95;
+      w.vx = w.vx * 0.85 + nx * baseSpd * 0.25;
+      w.vy = w.vy * 0.85 + ny * baseSpd * 0.25;
     }
 
+    // follow segments
     for (let i = 1; i < w.segs.length; i++) {
       const prev = w.segs[i - 1];
       const seg = w.segs[i];
@@ -771,11 +860,12 @@
     }
   }
 
+  // ---------- Step / Render ----------
+  let mutTimer = 0;
   function step(dt, time) {
     ensureBoss();
     trySplitByMcap();
 
-    // colony drift
     for (const c of colonies) {
       c.vx += rand(-0.02, 0.02) * c.dna.drift;
       c.vy += rand(-0.02, 0.02) * c.dna.drift;
@@ -784,20 +874,16 @@
       c.x += c.vx;
       c.y += c.vy;
 
-      for (const s of c.shock) {
-        s.r += s.v;
-        s.a *= 0.96;
-      }
+      for (const s of c.shock) { s.r += s.v; s.a *= 0.96; }
       c.shock = c.shock.filter((s) => s.a > 0.06);
     }
 
     for (const c of colonies) {
-      for (const w of c.worms) wormBehavior(c, w, time);
+      for (const w of c.worms) wormBehavior(c, w, time, dt);
     }
 
     if (focusOn) centerOnSelected(true);
 
-    // auto mutations based on activity
     mutTimer += dt;
     const g = growthScore();
     const mutRate = clamp(2.2 - g * 0.08, 0.4, 2.2);
@@ -814,12 +900,11 @@
     ctx.clearRect(0, 0, W, H);
     ctx.save();
 
-    // camera
     ctx.translate(W / 2, H / 2);
     ctx.scale(zoom, zoom);
     ctx.translate(camX, camY);
 
-    // background world grid + stars (BEHIND everything)
+    // space background + grid + stars + nebula
     drawBackground(time);
 
     for (let i = 0; i < colonies.length; i++) {
@@ -828,15 +913,18 @@
       irregularBlob(c, time);
 
       if (!isInteracting) {
-        aura(c.x, c.y, 130 * c.dna.aura, c.dna.hue, 0.18);
-        aura(c.x, c.y, 90 * c.dna.aura, (c.dna.hue + 40) % 360, 0.10);
+        ctx.save();
+        ctx.globalCompositeOperation = "lighter";
+        aura(c.x, c.y, 170 * c.dna.aura, c.dna.hue, 0.20);
+        aura(c.x, c.y, 110 * c.dna.aura, (c.dna.hue + 40) % 360, 0.12);
+        ctx.restore();
       }
 
       if (i === selected) {
         ctx.strokeStyle = `hsla(${c.dna.hue}, 95%, 65%, .55)`;
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.arc(c.x, c.y, 95 * c.dna.aura, 0, Math.PI * 2);
+        ctx.arc(c.x, c.y, 105 * c.dna.aura, 0, Math.PI * 2);
         ctx.stroke();
       }
 
@@ -857,10 +945,8 @@
     dbg.textContent = "JS LOADED ✓ (rendering)";
   }
 
-  // ---------- Main loop (performance throttles) ----------
+  // ---------- Main loop ----------
   let last = performance.now();
-
-  // smoother while interacting (pan feels less choppy)
   let renderAccum = 0;
   const IDLE_FPS = 40;
   const INTERACT_FPS = 60;
