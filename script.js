@@ -25,7 +25,6 @@
   // ---------- Helpers ----------
   const $ = (id) => document.getElementById(id);
   const fmt = (n) => "$" + Math.max(0, Math.round(n)).toLocaleString();
-
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const rand = (a, b) => a + Math.random() * (b - a);
   const randi = (a, b) => Math.floor(rand(a, b + 1));
@@ -34,6 +33,13 @@
     const dx = ax - bx, dy = ay - by;
     return dx * dx + dy * dy;
   };
+
+  // small deterministic hashes for stars (stable in world space)
+  const fract = (x) => x - Math.floor(x);
+  function hash2(ix, iy, salt = 0) {
+    const n = Math.sin(ix * 127.1 + iy * 311.7 + salt * 73.3) * 43758.5453123;
+    return fract(n);
+  }
 
   // ---------- DOM ----------
   const canvas = $("simCanvas") || $("c");
@@ -73,10 +79,7 @@
   let W = 1, H = 1, DPR = 1;
   function resizeCanvas() {
     const rect = canvas.getBoundingClientRect();
-
-    // PERF FIX #1: cap DPR so retina iPhones don't create huge canvases
-    DPR = Math.max(1, Math.min(2, window.devicePixelRatio || 1)); // was up to 3 before
-
+    DPR = Math.max(1, Math.min(2, window.devicePixelRatio || 1)); // cap DPR for iOS
     W = Math.max(1, rect.width);
     H = Math.max(1, rect.height);
     canvas.width = Math.floor(W * DPR);
@@ -102,12 +105,12 @@
   }
 
   // ---------- Camera + interaction ----------
-  let camX = 0, camY = 0, zoom = 0.78; // START ZOOMED OUT (still gets fit-to-arena below)
+  let camX = 0, camY = 0, zoom = 0.78; // start more zoomed out
   let dragging = false, lastX = 0, lastY = 0;
   let selected = 0;
   let focusOn = false;
 
-  // PERF FIX #3: render "lite" while interacting (dragging/pinching)
+  // render “lite” while interacting
   let isInteracting = false;
 
   function toWorld(px, py) {
@@ -229,8 +232,13 @@
     const segCount = big ? randi(18, 28) : randi(10, 18);
     const baseLen = big ? rand(10, 16) : rand(7, 12);
 
-    // more diverse colors per worm (not just +/- 70)
-    const hue = (col.dna.hue + rand(-140, 140) + 360) % 360;
+    const hue = (col.dna.hue + rand(-160, 160) + 360) % 360;
+
+    // IMPORTANT: give each worm unique orbit direction + bias so they don’t all align
+    const orbitDir = Math.random() < 0.5 ? -1 : 1;
+    const bias = rand(-Math.PI, Math.PI);
+    const wander = rand(0.6, 1.6);   // wander intensity
+    const flow = rand(0.2, 1.0);     // flow-field strength
 
     const w = {
       id: Math.random().toString(16).slice(2, 6),
@@ -242,7 +250,14 @@
       phase: rand(0, Math.PI * 2),
       limbs: [],
       segs: [],
-      isBoss: false
+      isBoss: false,
+
+      orbitDir,
+      bias,
+      wander,
+      flow,
+      // keep internal “heading momentum” so movement is less “snap to 0 rad”
+      headDrift: rand(-0.4, 0.4)
     };
 
     let px = col.x + rand(-55, 55);
@@ -267,9 +282,7 @@
   // ---------- Fit view (zoomed out start) ----------
   function zoomOutToFitAll() {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-
-    // Pad for blob + worms + auras
-    const pad = 420;
+    const pad = 520;
 
     for (const c of colonies) {
       minX = Math.min(minX, c.x - pad);
@@ -282,7 +295,7 @@
     const bh = Math.max(240, maxY - minY);
 
     const fit = Math.min(W / bw, H / bh);
-    zoom = clamp(fit * 0.92, 0.6, 1.6);
+    zoom = clamp(fit * 0.90, 0.55, 1.55);
 
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
@@ -327,7 +340,7 @@
     while (mcap >= nextSplitAt && colonies.length < MAX_COLONIES) {
       const base = colonies[0];
       const ang = rand(0, Math.PI * 2);
-      const dist = rand(220, 360);
+      const dist = rand(240, 420);
       const nc = newColony(
         base.x + Math.cos(ang) * dist,
         base.y + Math.sin(ang) * dist,
@@ -343,6 +356,9 @@
 
       log(`New colony spawned at ${fmt(nextSplitAt)} MC`, "EVENT");
       nextSplitAt += MC_STEP;
+
+      // when a new colony appears, gently zoom out so you can see more
+      zoomOutToFitAll();
     }
   }
 
@@ -450,8 +466,8 @@
     if (focusOn) centerOnSelected(false);
   });
 
-  bind("zoomIn", () => (zoom = clamp(zoom * 1.12, 0.6, 2.6)));
-  bind("zoomOut", () => (zoom = clamp(zoom * 0.88, 0.6, 2.6)));
+  bind("zoomIn", () => (zoom = clamp(zoom * 1.12, 0.55, 2.6)));
+  bind("zoomOut", () => (zoom = clamp(zoom * 0.88, 0.55, 2.6)));
 
   bind("capture", () => {
     try {
@@ -491,10 +507,105 @@
     ctx.fill();
   }
 
+  // WORLD-SPACE BACKGROUND: grid + stars (expands with pan/zoom)
+  function drawBackground(time) {
+    // compute world bounds of current view
+    const halfW = (W / 2) / zoom;
+    const halfH = (H / 2) / zoom;
+    const minX = -camX - halfW;
+    const maxX = -camX + halfW;
+    const minY = -camY - halfH;
+    const maxY = -camY + halfH;
+
+    // GRID: bigger + subtle
+    const GRID = 220;         // main spacing
+    const SUB = GRID / 2;     // sub-lines
+
+    // fade with zoom so it doesn’t explode when zoomed out
+    const gridAlpha = clamp(0.14 + (zoom - 0.7) * 0.08, 0.06, 0.18);
+    const subAlpha  = gridAlpha * 0.55;
+
+    ctx.lineWidth = 1 / zoom; // keep 1px-ish in world space
+    ctx.strokeStyle = `rgba(255,255,255,${gridAlpha})`;
+
+    // draw main vertical lines
+    let x0 = Math.floor(minX / GRID) * GRID;
+    let x1 = Math.ceil(maxX / GRID) * GRID;
+    let y0 = Math.floor(minY / GRID) * GRID;
+    let y1 = Math.ceil(maxY / GRID) * GRID;
+
+    ctx.beginPath();
+    for (let x = x0; x <= x1; x += GRID) {
+      ctx.moveTo(x, y0);
+      ctx.lineTo(x, y1);
+    }
+    for (let y = y0; y <= y1; y += GRID) {
+      ctx.moveTo(x0, y);
+      ctx.lineTo(x1, y);
+    }
+    ctx.stroke();
+
+    // sub-grid lines (lighter)
+    if (!isInteracting) {
+      ctx.strokeStyle = `rgba(255,255,255,${subAlpha})`;
+      ctx.beginPath();
+      let sx0 = Math.floor(minX / SUB) * SUB;
+      let sx1 = Math.ceil(maxX / SUB) * SUB;
+      let sy0 = Math.floor(minY / SUB) * SUB;
+      let sy1 = Math.ceil(maxY / SUB) * SUB;
+      for (let x = sx0; x <= sx1; x += SUB) {
+        // skip if it’s also a main grid line (avoid double brightness)
+        if (Math.abs((x % GRID + GRID) % GRID) < 0.001) continue;
+        ctx.moveTo(x, sy0);
+        ctx.lineTo(x, sy1);
+      }
+      for (let y = sy0; y <= sy1; y += SUB) {
+        if (Math.abs((y % GRID + GRID) % GRID) < 0.001) continue;
+        ctx.moveTo(sx0, y);
+        ctx.lineTo(sx1, y);
+      }
+      ctx.stroke();
+    }
+
+    // STARS: tiny white points in world space
+    // Use tile-based deterministic stars so they’re stable while panning.
+    const TILE = 320;
+    const starDensity = isInteracting ? 1 : 3; // fewer while interacting
+    const tx0 = Math.floor(minX / TILE);
+    const tx1 = Math.ceil(maxX / TILE);
+    const ty0 = Math.floor(minY / TILE);
+    const ty1 = Math.ceil(maxY / TILE);
+
+    ctx.save();
+    ctx.globalCompositeOperation = "source-over";
+    for (let ty = ty0; ty <= ty1; ty++) {
+      for (let tx = tx0; tx <= tx1; tx++) {
+        for (let k = 0; k < starDensity; k++) {
+          const hx = hash2(tx, ty, k * 11 + 1);
+          const hy = hash2(tx, ty, k * 11 + 2);
+          const hs = hash2(tx, ty, k * 11 + 3);
+
+          const sx = (tx + hx) * TILE;
+          const sy = (ty + hy) * TILE;
+
+          // brightness twinkle (subtle)
+          const tw = 0.65 + 0.35 * Math.sin(time * 0.001 + (tx * 13 + ty * 7 + k) * 0.9);
+          const a = (0.35 + 0.45 * hs) * tw;
+
+          const r = 0.7 + hs * 1.1; // tiny
+          ctx.fillStyle = `rgba(255,255,255,${a * (isInteracting ? 0.55 : 0.75)})`;
+          ctx.beginPath();
+          ctx.arc(sx, sy, r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    }
+    ctx.restore();
+  }
+
   function irregularBlob(col, time) {
     const baseHue = col.dna.hue;
 
-    // PERF FIX #4: while interacting, reduce heavy metaball aura stacking
     if (!isInteracting) {
       for (let i = 0; i < col.nodes.length; i++) {
         const n = col.nodes[i];
@@ -507,7 +618,6 @@
       aura(col.x, col.y, 140 * col.dna.aura, baseHue, 0.12);
     }
 
-    // outline wobble ring (cheap enough)
     const R = 130;
     ctx.strokeStyle = `hsla(${baseHue}, 90%, 65%, .30)`;
     ctx.lineWidth = 1.6;
@@ -528,7 +638,6 @@
   function drawWorm(w, time) {
     const pts = w.segs;
 
-    // PERF FIX #5: skip outer glow while interacting (biggest draw win)
     if (!isInteracting) {
       ctx.globalCompositeOperation = "lighter";
       ctx.strokeStyle = `hsla(${w.hue}, 92%, 62%, ${w.isBoss ? 0.26 : 0.14})`;
@@ -541,7 +650,6 @@
       ctx.stroke();
     }
 
-    // core
     ctx.globalCompositeOperation = "source-over";
     ctx.strokeStyle = `hsla(${w.hue}, 95%, 65%, ${w.isBoss ? 0.98 : 0.9})`;
     ctx.lineWidth = w.width;
@@ -552,7 +660,6 @@
     for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
     ctx.stroke();
 
-    // bead detail (PERF FIX: fewer beads + disabled while interacting)
     if (!isInteracting) {
       for (let i = 0; i < pts.length; i += 4) {
         const p = pts[i];
@@ -564,7 +671,6 @@
       }
     }
 
-    // limbs (keep but soften cost while interacting)
     if (w.limbs?.length) {
       ctx.globalCompositeOperation = isInteracting ? "source-over" : "lighter";
       for (const L of w.limbs) {
@@ -597,32 +703,55 @@
   // ---------- Simulation step ----------
   function wormBehavior(col, w, time) {
     const head = w.segs[0];
-    const jitter = Math.sin(time * 0.002 + w.phase) * 0.12;
+
+    // flow-field (prevents “all to the right” alignment)
+    // stable-ish per worm, changes slowly with time
+    const flowAng =
+      Math.sin((head.x * 0.003) + time * 0.00045 + w.bias) * 0.9 +
+      Math.cos((head.y * 0.003) - time * 0.00038 + w.bias) * 0.9;
+
+    // wander
+    const wanderAng = Math.sin(time * 0.0012 + w.phase) * 0.65 * w.wander;
+
+    // tiny momentum drift
+    w.headDrift = w.headDrift * 0.985 + (Math.random() - 0.5) * 0.03;
+    const jitter = w.headDrift * 0.12;
+
+    // base heading update
     head.a += (Math.random() - 0.5) * w.turn + jitter;
 
     const dx = col.x - head.x;
     const dy = col.y - head.y;
     const toward = Math.atan2(dy, dx);
 
+    // mix target angles (toward + orbit + flow + wander)
+    let target = toward;
+
     if (w.type === "DRIFTER") {
-      head.a = head.a * 0.93 + toward * 0.07;
+      target = toward + flowAng * 0.55 * w.flow + wanderAng * 0.35;
+      head.a = head.a * 0.92 + target * 0.08;
     } else if (w.type === "ORBITER") {
-      const orbit = toward + (Math.sin(time * 0.001 + w.phase) > 0 ? 1 : -1) * 0.9;
-      head.a = head.a * 0.90 + orbit * 0.10;
+      const orbit = toward + w.orbitDir * (0.85 + 0.2 * Math.sin(time * 0.0009 + w.phase));
+      target = orbit + flowAng * 0.35 * w.flow + wanderAng * 0.25;
+      head.a = head.a * 0.88 + target * 0.12;
     } else {
       const bite = toward + Math.sin(time * 0.003 + w.phase) * 0.35;
-      head.a = head.a * 0.86 + bite * 0.14;
+      target = bite + flowAng * 0.40 * w.flow + wanderAng * 0.25;
+      head.a = head.a * 0.84 + target * 0.16;
     }
 
     const boost = w.isBoss ? 2.0 : 1.0;
-    head.x += Math.cos(head.a) * w.speed * 2.2 * boost;
-    head.y += Math.sin(head.a) * w.speed * 2.2 * boost;
+    head.x += Math.cos(head.a) * w.speed * 2.15 * boost;
+    head.y += Math.sin(head.a) * w.speed * 2.15 * boost;
 
+    // soft boundary keeps them near colony without snapping direction to 0
     const d = Math.hypot(head.x - col.x, head.y - col.y);
-    if (d > 260) {
-      head.a += Math.PI * 0.7 * (Math.random() > 0.5 ? 1 : -1);
-      head.x = col.x + (head.x - col.x) * 0.92;
-      head.y = col.y + (head.y - col.y) * 0.92;
+    if (d > 290) {
+      // gently bend back toward center
+      const back = toward + w.orbitDir * 0.25;
+      head.a = head.a * 0.78 + back * 0.22;
+      head.x = col.x + (head.x - col.x) * 0.94;
+      head.y = col.y + (head.y - col.y) * 0.94;
     }
 
     for (let i = 1; i < w.segs.length; i++) {
@@ -690,12 +819,14 @@
     ctx.scale(zoom, zoom);
     ctx.translate(camX, camY);
 
+    // background world grid + stars (BEHIND everything)
+    drawBackground(time);
+
     for (let i = 0; i < colonies.length; i++) {
       const c = colonies[i];
 
       irregularBlob(c, time);
 
-      // auras (reduced while interacting handled in irregularBlob)
       if (!isInteracting) {
         aura(c.x, c.y, 130 * c.dna.aura, c.dna.hue, 0.18);
         aura(c.x, c.y, 90 * c.dna.aura, (c.dna.hue + 40) % 360, 0.10);
@@ -729,10 +860,10 @@
   // ---------- Main loop (performance throttles) ----------
   let last = performance.now();
 
-  // PERF FIX #2: render at a capped FPS (step stays smooth)
+  // smoother while interacting (pan feels less choppy)
   let renderAccum = 0;
-  const RENDER_FPS = 40;        // try 30 if your phone is older
-  const RENDER_DT = 1 / RENDER_FPS;
+  const IDLE_FPS = 40;
+  const INTERACT_FPS = 60;
 
   function tick(now) {
     const dt = Math.min((now - last) / 1000, 0.05);
@@ -740,8 +871,11 @@
 
     step(dt, now);
 
+    const fps = isInteracting ? INTERACT_FPS : IDLE_FPS;
+    const targetDt = 1 / fps;
+
     renderAccum += dt;
-    if (renderAccum >= RENDER_DT) {
+    if (renderAccum >= targetDt) {
       renderAccum = 0;
       render(now);
     }
@@ -752,7 +886,7 @@
   // ---------- Boot ----------
   function boot() {
     resizeCanvas();
-    zoomOutToFitAll(); // START VIEW: zoomed out + centered
+    zoomOutToFitAll();
     updateStats();
     log("Simulation ready", "INFO");
     requestAnimationFrame(tick);
