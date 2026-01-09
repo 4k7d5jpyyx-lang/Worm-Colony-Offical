@@ -28,6 +28,22 @@
   const randi = (a, b) => Math.floor(rand(a, b + 1));
   const lerp = (a, b, t) => a + (b - a) * t;
 
+  const TAU = Math.PI * 2;
+
+  // --- robust angle helpers (prevents drift/NaN collapse) ---
+  function wrapAngle(a) {
+    a = (a + Math.PI) % TAU;
+    if (a < 0) a += TAU;
+    return a - Math.PI;
+  }
+  function lerpAngle(a, b, t) {
+    if (!Number.isFinite(a)) a = 0;
+    if (!Number.isFinite(b)) b = 0;
+    t = clamp(t, 0, 1);
+    const d = wrapAngle(b - a);
+    return a + d * t;
+  }
+
   // =========================
   // Canvas sizing
   // =========================
@@ -330,7 +346,6 @@
   bg.ctx = bg.canvas.getContext("2d");
 
   function makeStarfield() {
-    // create a big tile; we will parallax it
     bg.w = 900;
     bg.h = 900;
     bg.canvas.width = bg.w;
@@ -353,7 +368,7 @@
       b.fill();
     }
 
-    // galaxy swirls (soft arcs)
+    // galaxy swirls
     b.globalCompositeOperation = "lighter";
     for (let i = 0; i < 7; i++) {
       const cx = rand(0, bg.w), cy = rand(0, bg.h);
@@ -363,7 +378,7 @@
       b.lineWidth = rand(1.2, 2.4);
       for (let k = 0; k < 6; k++) {
         b.beginPath();
-        const start = rand(0, Math.PI * 2);
+        const start = rand(0, TAU);
         const span = rand(Math.PI * 0.6, Math.PI * 1.2);
         for (let t = 0; t <= 1.001; t += 0.06) {
           const a = start + span * t;
@@ -378,7 +393,7 @@
     }
     b.globalCompositeOperation = "source-over";
 
-    // stars: tiny + medium + sparkles
+    // stars
     for (let i = 0; i < 1400; i++) {
       const x = rand(0, bg.w), y = rand(0, bg.h);
       const r = Math.random() < 0.90 ? rand(0.3, 1.2) : rand(1.2, 2.2);
@@ -386,10 +401,9 @@
       const hue = Math.random() < 0.85 ? 210 : rand(180, 320);
       b.fillStyle = `hsla(${hue}, 95%, 85%, ${a})`;
       b.beginPath();
-      b.arc(x, y, r, 0, Math.PI * 2);
+      b.arc(x, y, r, 0, TAU);
       b.fill();
 
-      // sparkle cross sometimes
       if (r > 1.5 && Math.random() < 0.25) {
         b.strokeStyle = `hsla(${hue}, 95%, 90%, ${a * 0.55})`;
         b.lineWidth = 1;
@@ -404,9 +418,7 @@
   }
   makeStarfield();
 
-  function drawBackground(time) {
-    // parallax: move slower than world to avoid "glitchy grid" feel
-    // (this also keeps background stable in screen space)
+  function drawBackground() {
     const px = (-camX * zoom * 0.10) % bg.w;
     const py = (-camY * zoom * 0.10) % bg.h;
     for (let ix = -1; ix <= 1; ix++) {
@@ -414,8 +426,6 @@
         ctx.drawImage(bg.canvas, px + ix * bg.w, py + iy * bg.h);
       }
     }
-
-    // subtle twinkle overlay (cheap)
     ctx.globalCompositeOperation = "lighter";
     ctx.fillStyle = "rgba(255,255,255,.015)";
     ctx.fillRect(0, 0, W, H);
@@ -429,22 +439,19 @@
   const DNA_BIOMES = ["NEON GARDEN", "DEEP SEA", "VOID BLOOM", "GLASS CAVE", "ARC STORM", "EMBER WASTE", "ICE TEMPLE", "STARFIELD"];
   const DNA_STYLES = ["COMET", "CROWN", "ARC", "SPIRAL", "DRIFT", "RIBBON", "FRACTAL", "ORBIT"];
 
-  function hashSeed(str) {
-    let h = 2166136261;
-    for (let i = 0; i < str.length; i++) {
-      h ^= str.charCodeAt(i);
-      h = Math.imul(h, 16777619);
+  function makeColonyOutline(dna) {
+    const pts = [];
+    const baseR = 120 * dna.aura;
+    const spikes = randi(9, 16);
+    for (let i = 0; i < spikes; i++) {
+      const a = (i / spikes) * TAU;
+      const wob =
+        Math.sin(a * (2.0 + dna.chaos) + dna.seed) * (18 + 18 * dna.chaos) +
+        Math.sin(a * (5.0 + dna.drift) - dna.seed * 0.7) * (10 + 12 * dna.drift);
+      const r = baseR + wob;
+      pts.push({ a, r });
     }
-    return (h >>> 0) / 4294967295;
-  }
-
-  function makeDnaCode(c) {
-    const a = Math.floor((c.dna.hue % 360));
-    const b = Math.floor(c.dna.chaos * 99);
-    const d = Math.floor(c.dna.drift * 99);
-    const e = Math.floor(c.dna.aura * 99);
-    const f = Math.floor(c.dna.limbiness * 99);
-    return `H${a}-C${b}-D${d}-A${e}-L${f}`;
+    return pts;
   }
 
   function newColony(x, y, hue = rand(0, 360)) {
@@ -472,41 +479,35 @@
       outline,
       worms: [],
       shock: [],
-      freezeT: 0,      // used by ice queen pulse
-      lastBreath: 0,   // used by fire worm
+      freezeT: 0,
+      lastBreath: 0,
     };
   }
 
-  function makeColonyOutline(dna) {
-    // irregular polygon instead of circles
-    const pts = [];
-    const baseR = 120 * dna.aura;
-    const spikes = randi(9, 16);
-    for (let i = 0; i < spikes; i++) {
-      const a = (i / spikes) * Math.PI * 2;
-      const wob =
-        Math.sin(a * (2.0 + dna.chaos) + dna.seed) * (18 + 18 * dna.chaos) +
-        Math.sin(a * (5.0 + dna.drift) - dna.seed * 0.7) * (10 + 12 * dna.drift);
-      const r = baseR + wob;
-      pts.push({ a, r });
-    }
-    return pts;
+  function addLimb(w, col, big = false) {
+    if (!w.segs.length) return;
+    const at = randi(2, w.segs.length - 3);
+    w.limbs.push({
+      at,
+      len: big ? rand(40, 110) : rand(24, 78),
+      ang: rand(-1.4, 1.4),
+      wob: rand(0.7, 1.9)
+    });
   }
 
   function newWorm(col, big = false, special = null) {
-    // special types: "BOSS", "FIRE_DOGE", "ICE_QUEEN"
     const type = ["DRIFTER", "ORBITER", "HUNTER"][randi(0, 2)];
     const segCount = big ? randi(18, 30) : randi(12, 20);
     const baseLen = big ? rand(10, 16) : rand(7, 12);
 
-    // spawn position evenly around colony (prevents “everyone right”)
-    const spawnAng = rand(0, Math.PI * 2);
+    // spawn position evenly around colony
+    const spawnAng = rand(0, TAU);
     const spawnRad = rand(40, 120);
     let px = col.x + Math.cos(spawnAng) * spawnRad;
     let py = col.y + Math.sin(spawnAng) * spawnRad;
 
-    // worm heading random
-    let ang = rand(0, Math.PI * 2);
+    // random heading
+    let ang = rand(0, TAU);
 
     // color patterns
     const paletteShift = rand(-160, 160);
@@ -519,13 +520,21 @@
       width: big ? rand(7, 12) : rand(4.4, 7.2),
       speed: big ? rand(0.36, 0.78) : rand(0.48, 1.08),
       turn: rand(0.010, 0.024) * col.dna.chaos,
-      phase: rand(0, Math.PI * 2),
+      phase: rand(0, TAU),
 
-      // ✅ fixes “right drift”
+      // ✅ balanced steering fields (prevents drift bias)
       orbitDir: Math.random() < 0.5 ? -1 : 1,
       roamBias: rand(0.10, 0.28),
 
-      // visual pattern controls
+      // per-worm wander state (critical)
+      wanderA: rand(0, TAU),
+      wanderV: rand(-0.85, 0.85),
+      wanderT: rand(0.9, 2.4),
+
+      // per-worm orbit anchor around colony center
+      homePhase: rand(0, TAU),
+      seed: Math.floor(Math.random() * 1e9),
+
       pat: {
         stripe: Math.random() < 0.75,
         dots: Math.random() < 0.45,
@@ -539,7 +548,6 @@
       isBoss: false,
       special: special || null,
 
-      // particles (fire)
       breath: [],
     };
 
@@ -550,12 +558,11 @@
       ang += rand(-0.35, 0.35) * col.dna.chaos;
     }
 
-    // special visuals
     if (special === "FIRE_DOGE") {
       w.isBoss = true;
       w.width *= 1.8;
       w.speed *= 0.92;
-      w.hue = 22; // fire
+      w.hue = 22;
       w.pat.hue2 = 55;
       w.pat.sparkle = true;
     }
@@ -563,27 +570,15 @@
       w.isBoss = true;
       w.width *= 2.0;
       w.speed *= 0.86;
-      w.hue = 200; // ice
+      w.hue = 200;
       w.pat.hue2 = 265;
       w.pat.sparkle = true;
     }
 
-    // limbs scale with dna
     const limbChance = clamp(0.10 + col.dna.limbiness * 0.22, 0.12, 0.55);
     if (Math.random() < limbChance) addLimb(w, col, big || w.isBoss);
 
     return w;
-  }
-
-  function addLimb(w, col, big = false) {
-    if (!w.segs.length) return;
-    const at = randi(2, w.segs.length - 3);
-    w.limbs.push({
-      at,
-      len: big ? rand(40, 110) : rand(24, 78),
-      ang: rand(-1.4, 1.4),
-      wob: rand(0.7, 1.9)
-    });
   }
 
   // =========================
@@ -609,18 +604,18 @@
   }
 
   // =========================
-  // “Stop right drift” flow field
+  // Tiny turbulence field (SAFE: returns small symmetric offset, not an angle target)
   // =========================
-  function flowAngle(x, y, time) {
-    // smooth pseudo-field based on world coords + time
-    const t = time * 0.00025;
-    const nx = x * 0.0022;
-    const ny = y * 0.0022;
-    const a =
-      Math.sin(nx + t) * 1.2 +
-      Math.cos(ny - t * 1.3) * 1.0 +
-      Math.sin((nx + ny) * 0.7 + t * 1.8) * 0.8;
-    return a; // radians-ish
+  function fieldJitter(x, y, time) {
+    const t = time * 0.00035;
+    const nx = x * 0.0020;
+    const ny = y * 0.0020;
+    // small bounded value in [-1..1]
+    return (
+      Math.sin(nx + t) * 0.55 +
+      Math.cos(ny - t * 1.3) * 0.45 +
+      Math.sin((nx + ny) * 0.7 + t * 1.8) * 0.35
+    );
   }
 
   // =========================
@@ -664,24 +659,29 @@
       strokePath(pts, w.width, `hsla(${w.hue}, 95%, 65%, .92)`, null);
     }
 
-    // patterns: stripes/dots/dual color along body
     if (!isInteracting) {
       for (let i = 0; i < pts.length; i += 2) {
         const p = pts[i];
-        const t = i / Math.max(1, pts.length - 1);
+        const tt = i / Math.max(1, pts.length - 1);
         const stripeOn = w.pat.stripe && (i % 6 < 3);
         const useHue = (w.pat.dual && stripeOn) ? w.pat.hue2 : w.hue;
 
-        const r = Math.max(1.6, w.width * (0.30 + 0.18 * Math.sin(t * 10 + w.phase)));
+        const r = Math.max(1.6, w.width * (0.30 + 0.18 * Math.sin(tt * 10 + w.phase)));
         ctx.fillStyle = `hsla(${useHue}, 95%, ${stripeOn ? 68 : 62}%, .85)`;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, r, 0, TAU);
         ctx.fill();
 
         if (w.pat.dots && (i % 8 === 0)) {
           ctx.fillStyle = `hsla(${(useHue + 30) % 360}, 95%, 76%, .75)`;
           ctx.beginPath();
-          ctx.arc(p.x + Math.sin(t * 8 + time * 0.003) * 2, p.y + Math.cos(t * 8 + time * 0.003) * 2, r * 0.55, 0, Math.PI * 2);
+          ctx.arc(
+            p.x + Math.sin(tt * 8 + time * 0.003) * 2,
+            p.y + Math.cos(tt * 8 + time * 0.003) * 2,
+            r * 0.55,
+            0,
+            TAU
+          );
           ctx.fill();
         }
 
@@ -698,7 +698,6 @@
       }
     }
 
-    // limbs
     if (w.limbs?.length) {
       ctx.globalCompositeOperation = isInteracting ? "source-over" : "lighter";
       for (const L of w.limbs) {
@@ -727,13 +726,12 @@
       ctx.globalCompositeOperation = "source-over";
     }
 
-    // fire breath particles
     if (w.special === "FIRE_DOGE" && w.breath.length) {
       ctx.globalCompositeOperation = "lighter";
       for (const p of w.breath) {
         ctx.fillStyle = `hsla(${p.h}, 95%, 65%, ${p.a})`;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, p.r, 0, TAU);
         ctx.fill();
       }
       ctx.globalCompositeOperation = "source-over";
@@ -749,14 +747,13 @@
     g.addColorStop(1, `hsla(${hue},95%,65%,0)`);
     ctx.fillStyle = g;
     ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.arc(x, y, r, 0, TAU);
     ctx.fill();
   }
 
   function drawColony(col, time) {
     const hue = col.dna.hue;
 
-    // richer layered aura (but cheaper while interacting)
     if (!isInteracting) {
       aura(col.x, col.y, 190 * col.dna.aura, hue, 0.16);
       aura(col.x, col.y, 140 * col.dna.aura, (hue + 40) % 360, 0.10);
@@ -765,7 +762,6 @@
       aura(col.x, col.y, 145 * col.dna.aura, hue, 0.12);
     }
 
-    // irregular outline
     ctx.strokeStyle = `hsla(${hue}, 90%, 65%, .28)`;
     ctx.lineWidth = 1.8;
     ctx.beginPath();
@@ -781,26 +777,23 @@
     ctx.closePath();
     ctx.stroke();
 
-    // selected ring
     if (colonies[selected] === col) {
       ctx.strokeStyle = `hsla(${hue}, 95%, 65%, .55)`;
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(col.x, col.y, 105 * col.dna.aura, 0, Math.PI * 2);
+      ctx.arc(col.x, col.y, 105 * col.dna.aura, 0, TAU);
       ctx.stroke();
     }
 
-    // shock rings
     for (const s of col.shock) {
       const hh = (s.hue ?? hue);
       ctx.strokeStyle = `hsla(${hh}, 92%, 62%, ${s.a})`;
       ctx.lineWidth = s.w;
       ctx.beginPath();
-      ctx.arc(col.x, col.y, s.r, 0, Math.PI * 2);
+      ctx.arc(col.x, col.y, s.r, 0, TAU);
       ctx.stroke();
     }
 
-    // ice queen freeze aura pulse
     if (col.freezeT > 0) {
       ctx.globalCompositeOperation = "lighter";
       aura(col.x, col.y, 220 * col.dna.aura, 200, 0.10 * clamp(col.freezeT / 2.0, 0, 1));
@@ -809,36 +802,62 @@
   }
 
   // =========================
-  // Worm behavior (fixed drift + more life)
+  // Worm behavior (FIXED: no directional bias)
   // =========================
   function wormBehavior(col, w, time, dt) {
-    const head = w.segs[0];
+    dt = Number.isFinite(dt) ? dt : 1 / 60;
 
-    // freeze effect from ice queen
+    const head = w.segs[0];
+    if (!head) return;
+
+    // ensure steering state exists (older worms safety)
+    if (w.orbitDir !== 1 && w.orbitDir !== -1) w.orbitDir = Math.random() < 0.5 ? -1 : 1;
+    if (!Number.isFinite(w.roamBias)) w.roamBias = rand(0.10, 0.28);
+    if (!Number.isFinite(w.wanderA)) w.wanderA = rand(0, TAU);
+    if (!Number.isFinite(w.wanderV)) w.wanderV = rand(-0.85, 0.85);
+    if (!Number.isFinite(w.wanderT)) w.wanderT = rand(0.9, 2.4);
+    if (!Number.isFinite(w.homePhase)) w.homePhase = rand(0, TAU);
+    if (!Number.isFinite(w.seed)) w.seed = Math.floor(Math.random() * 1e9);
+    if (!w.breath) w.breath = [];
+
     const freezeSlow = col.freezeT > 0 ? 0.55 : 1.0;
 
-    // base jitter + flow field (prevents global "right pull")
-    const jitter = Math.sin(time * 0.002 + w.phase) * 0.12;
-    const field = flowAngle(head.x, head.y, time);
+    // --- wander update (symmetric, no drift) ---
+    w.wanderT -= dt;
+    if (w.wanderT <= 0) {
+      w.wanderT = rand(0.9, 2.4);
+      w.wanderV = clamp(w.wanderV + rand(-0.8, 0.8), -1.6, 1.6);
+    }
+    w.wanderA = wrapAngle(w.wanderA + w.wanderV * dt);
 
-    // toward colony + orbit
-    const dx = col.x - head.x;
-    const dy = col.y - head.y;
-    const toward = Math.atan2(dy, dx);
+    // --- per-worm moving "home point" around colony (prevents stampede direction) ---
+    const baseR = 85 + 85 * col.dna.aura + (w.isBoss ? 95 : 0);
+    const spin = (0.00022 + 0.00014 * col.dna.drift) * w.orbitDir;
+    const wob = Math.sin(time * 0.0011 + w.homePhase) * 38 + Math.sin(time * 0.0007 + w.seed * 0.00001) * 22;
+    const R = Math.max(55, baseR + wob);
 
-    // per-worm roam target mixes toward + field + orbit
-    const orbit = toward + w.orbitDir * (0.75 + 0.35 * Math.sin(time * 0.001 + w.phase));
-    const desired =
-      (w.type === "DRIFTER")
-        ? lerpAngle(toward, field, w.roamBias)
-        : (w.type === "ORBITER")
-          ? lerpAngle(orbit, field, w.roamBias + 0.08)
-          : lerpAngle(lerpAngle(toward, orbit, 0.5), field, w.roamBias + 0.10);
+    const homeAng = w.homePhase + time * spin + Math.sin(time * 0.0016 + w.phase) * 0.35;
+    const tx = col.x + Math.cos(homeAng) * R;
+    const ty = col.y + Math.sin(homeAng) * R;
 
-    // turn
-    const turnAmt = w.turn * (0.9 + 0.25 * Math.sin(time * 0.001 + w.phase));
-    head.a = lerpAngle(head.a, desired, clamp(turnAmt * 9.0, 0.06, 0.22));
-    head.a += (Math.random() - 0.5) * turnAmt + jitter * 0.55;
+    const towardHome = Math.atan2(ty - head.y, tx - head.x);
+
+    // --- type behavior (balanced) ---
+    let desired = towardHome;
+
+    if (w.type === "ORBITER") {
+      desired = towardHome + w.orbitDir * (0.75 + 0.25 * Math.sin(time * 0.001 + w.phase));
+    } else if (w.type === "HUNTER") {
+      desired = towardHome + Math.sin(time * 0.003 + w.phase) * 0.35;
+    }
+
+    // add wander + tiny symmetric turbulence (NOT a target angle)
+    const turb = fieldJitter(head.x, head.y, time) * 0.10;
+    desired = wrapAngle(desired + (w.wanderA - 0) * (0.08 + w.roamBias) + turb);
+
+    // turn + move
+    const turnAmt = clamp(w.turn * (0.9 + 0.25 * Math.sin(time * 0.001 + w.phase)), 0.006, 0.09);
+    head.a = lerpAngle(head.a, desired, clamp(turnAmt * 10.0, 0.08, 0.25));
 
     // movement
     const boost = w.isBoss ? 1.6 : 1.0;
@@ -846,14 +865,16 @@
     head.x += Math.cos(head.a) * sp;
     head.y += Math.sin(head.a) * sp;
 
-    // leash to colony so they don’t flee forever
-    const d = Math.hypot(head.x - col.x, head.y - col.y);
-    const leash = 300 + 65 * col.dna.aura;
+    // leash to colony (smooth)
+    const dx = head.x - col.x;
+    const dy = head.y - col.y;
+    const d = Math.hypot(dx, dy);
+    const leash = 320 + 80 * col.dna.aura + (w.isBoss ? 70 : 0);
     if (d > leash) {
-      // push them back in smoothly
-      head.x = col.x + (head.x - col.x) * 0.92;
-      head.y = col.y + (head.y - col.y) * 0.92;
-      head.a = lerpAngle(head.a, toward, 0.25);
+      const back = Math.atan2(col.y - head.y, col.x - head.x);
+      head.a = lerpAngle(head.a, back, 0.22);
+      head.x = col.x + dx * 0.92;
+      head.y = col.y + dy * 0.92;
     }
 
     // segment follow
@@ -880,12 +901,10 @@
       if (time >= w.__nextBreath) {
         w.__nextBreath = time + rand(8000, 14000);
 
-        // giant shockwave
         shockwave(col, 2.2, 22);
         pushLog("mile", "🔥 100k Special: Fire-Breathing Doge Worm unleashes a blast!");
         playSfx("fire", 1.2);
 
-        // spawn breath particles forward
         const hx = head.x, hy = head.y;
         const dir = head.a;
         for (let k = 0; k < 60; k++) {
@@ -901,7 +920,6 @@
         }
       }
 
-      // update breath
       for (const p of w.breath) {
         p.x += p.vx;
         p.y += p.vy;
@@ -912,11 +930,6 @@
       }
       w.breath = w.breath.filter(p => p.a > 0.05 && p.r > 0.6);
     }
-  }
-
-  function lerpAngle(a, b, t) {
-    const d = (((b - a) % (Math.PI * 2)) + Math.PI * 3) % (Math.PI * 2) - Math.PI;
-    return a + d * t;
   }
 
   // =========================
@@ -984,7 +997,7 @@
   function trySplitByMcap() {
     while (mcap >= nextSplitAt && colonies.length < MAX_COLONIES) {
       const base = colonies[0];
-      const ang = rand(0, Math.PI * 2);
+      const ang = rand(0, TAU);
       const dist = rand(260, 460);
       const nc = newColony(
         base.x + Math.cos(ang) * dist,
@@ -1025,7 +1038,6 @@
   }
 
   function checkMilestones() {
-    // 100k Fire Doge Worm
     if (!milestone100k.hit && mcap >= 100000) {
       milestone100k.hit = true;
       const c = colonies[0];
@@ -1037,7 +1049,6 @@
       playSfx("fire", 1.2);
     }
 
-    // 250k Ice Queen Hatch
     if (!milestone250k.hit && mcap >= 250000) {
       milestone250k.hit = true;
       const c = colonies[0];
@@ -1045,7 +1056,6 @@
       for (let i = 0; i < 6; i++) addLimb(queen, c, true);
       c.worms.push(queen);
 
-      // freeze pulse for a moment
       c.freezeT = 2.6;
       shockwave(c, 2.2, 200);
       pushLog("mile", "❄️ 250k Milestone: Ice Queen hatch — the colony chills!");
@@ -1054,7 +1064,7 @@
   }
 
   // =========================
-  // Controls (keep your mechanics)
+  // Controls
   // =========================
   function bind(action, fn) {
     const btn = document.querySelector(`button[data-action="${action}"]`);
@@ -1148,7 +1158,6 @@
     trySplitByMcap();
     checkMilestones();
 
-    // colony drift
     for (const c of colonies) {
       c.vx += rand(-0.02, 0.02) * c.dna.drift;
       c.vy += rand(-0.02, 0.02) * c.dna.drift;
@@ -1157,7 +1166,6 @@
       c.x += c.vx;
       c.y += c.vy;
 
-      // freeze timer
       if (c.freezeT > 0) c.freezeT = Math.max(0, c.freezeT - dt);
 
       for (const s of c.shock) {
@@ -1167,14 +1175,12 @@
       c.shock = c.shock.filter((s) => s.a > 0.06);
     }
 
-    // worms
     for (const c of colonies) {
       for (const w of c.worms) wormBehavior(c, w, time, dt);
     }
 
     if (focusOn) centerOnSelected(true);
 
-    // auto mutations
     mutTimer += dt;
     const g = growthScore();
     const mutRate = clamp(2.2 - g * 0.07, 0.35, 2.2);
@@ -1190,19 +1196,15 @@
   function render(time) {
     ctx.clearRect(0, 0, W, H);
 
-    // background (screen space)
-    drawBackground(time);
+    drawBackground();
 
-    // camera
     ctx.save();
     ctx.translate(W / 2, H / 2);
     ctx.scale(zoom, zoom);
     ctx.translate(camX, camY);
 
-    // colonies
     for (const c of colonies) drawColony(c, time);
 
-    // worms
     for (const c of colonies) {
       for (const w of c.worms) drawWorm(w, time);
     }
