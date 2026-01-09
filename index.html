@@ -34,6 +34,29 @@
         <div class="simWrap">
           <canvas id="simCanvas"></canvas>
 
+          <!-- Colony Inspector (overlay) -->
+          <div class="inspector" id="inspector" aria-label="Colony inspector">
+            <div class="inspectorTop">
+              <div class="inspectorTitle">
+                <span class="pill">Selected</span>
+                <span id="insTitle">Colony #1</span>
+              </div>
+              <button class="iconBtn" id="insClose" title="Hide">✕</button>
+            </div>
+
+            <div class="insGrid">
+              <div class="kv"><div class="k">DNA</div><div class="v" id="insDNA">—</div></div>
+              <div class="kv"><div class="k">Temperament</div><div class="v" id="insTemp">—</div></div>
+              <div class="kv"><div class="k">Biome</div><div class="v" id="insBiome">—</div></div>
+              <div class="kv"><div class="k">Style</div><div class="v" id="insStyle">—</div></div>
+            </div>
+
+            <div class="insMut">
+              <div class="insMutHdr">Recent Mutations</div>
+              <div class="insMutList" id="insMutList"></div>
+            </div>
+          </div>
+
           <!-- Overlay: debug toast -->
           <div class="toast" id="toast">Loading…</div>
         </div>
