@@ -17,14 +17,15 @@
   const elWorms = $("worms");
   const eventLogEl = $("eventLog");
 
-  // Optional inspector (only updates if present in HTML)
-  const inspector = $("inspector");
-  const selName = $("selName");
-  const dnaVal = $("dnaVal");
-  const tempVal = $("tempVal");
-  const biomeVal = $("biomeVal");
-  const styleVal = $("styleVal");
-  const mutList = $("mutList");
+  // Inspector (overlay)
+  const insBox = $("inspector");
+  const insTitle = $("insTitle");
+  const insDNA = $("insDNA");
+  const insTemp = $("insTemp");
+  const insBiome = $("insBiome");
+  const insStyle = $("insStyle");
+  const insMutList = $("insMutList");
+  const insClose = $("insClose");
 
   if (!canvas) return;
 
@@ -55,16 +56,15 @@
   setTimeout(resizeCanvas, 0);
 
   // =========================
-  // Event log (capped + pretty)
+  // Event log (capped + merge spam)
   // =========================
-  const LOG_CAP = 40; // keep DOM light
+  const LOG_CAP = 40;
   let lastLog = { msg: "", t: 0, count: 0, badge: "" };
 
   function pushLog(badge, msg, meta = "") {
     if (!eventLogEl) return;
     const now = Date.now();
 
-    // merge spam
     if (msg === lastLog.msg && badge === lastLog.badge && now - lastLog.t < 1200) {
       lastLog.count++;
       const first = eventLogEl.firstChild;
@@ -178,7 +178,7 @@
       g.gain.exponentialRampToValueAtTime(0.0001, now + 0.34);
     } else {
       o.frequency.setValueAtTime(420, now);
-      o.frequency.exponentialRampToValueAtTime(220, now + 0.25);
+      o.frequency.exponentialRampToValueAtTime(220, now + 0.25 + intensity * 0.2);
       g.gain.setValueAtTime(0.0001, now);
       g.gain.linearRampToValueAtTime(0.10, now + A);
       g.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
@@ -219,25 +219,33 @@
   // Camera + interaction
   // =========================
   let camX = 0, camY = 0, zoom = 0.82;
-  let dragging = false, lastX = 0, lastY = 0;
   let selected = 0;
   let focusOn = false;
   let isInteracting = false;
 
-  // ✅ FIX: convert client coords to canvas-local coords
-  function clientToCanvas(e) {
-    const rect = canvas.getBoundingClientRect();
-    return {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top
-    };
+  // ---- robust input state (tap vs drag) ----
+  const input = {
+    down: false,
+    pointerId: null,
+    startX: 0,
+    startY: 0,
+    lastX: 0,
+    lastY: 0,
+    moved: 0,
+    downTime: 0,
+    wasDrag: false,
+    tapWorld: null
+  };
+
+  function canvasLocalFromClient(clientX, clientY) {
+    const r = canvas.getBoundingClientRect();
+    return { x: clientX - r.left, y: clientY - r.top };
   }
 
-  // ✅ FIX: toWorld must use canvas-local coords
-  function toWorld(localX, localY) {
+  function toWorldFromCanvasLocal(px, py) {
     return {
-      x: (localX - W / 2) / zoom - camX,
-      y: (localY - H / 2) / zoom - camY
+      x: (px - W / 2) / zoom - camX,
+      y: (py - H / 2) / zoom - camY
     };
   }
 
@@ -253,62 +261,71 @@
       const d = dist2(wx, wy, c.x, c.y);
       if (d < bestD) { bestD = d; best = i; }
     }
-    return (best !== -1 && bestD < 280 * 280) ? best : -1;
+    return (best !== -1 && bestD < 320 * 320) ? best : -1;
   }
-
-  // ✅ Tap vs drag detection
-  let downPos = { x: 0, y: 0 };
-  let movedPx = 0;
-  const TAP_SLOP = 10;
 
   canvas.addEventListener("pointerdown", (e) => {
     canvas.setPointerCapture?.(e.pointerId);
+    ensureAudio();
 
-    const p = clientToCanvas(e);
-    downPos.x = p.x;
-    downPos.y = p.y;
-    movedPx = 0;
+    input.down = true;
+    input.pointerId = e.pointerId;
+    input.downTime = performance.now();
 
-    dragging = true;
+    input.startX = e.clientX;
+    input.startY = e.clientY;
+    input.lastX = e.clientX;
+    input.lastY = e.clientY;
+    input.moved = 0;
+    input.wasDrag = false;
+
     isInteracting = true;
-    lastX = e.clientX; lastY = e.clientY;
   }, { passive: true });
 
   canvas.addEventListener("pointermove", (e) => {
-    if (!dragging) return;
+    if (!input.down || e.pointerId !== input.pointerId) return;
 
-    const dxC = e.clientX - lastX;
-    const dyC = e.clientY - lastY;
-    lastX = e.clientX; lastY = e.clientY;
+    const dx = e.clientX - input.lastX;
+    const dy = e.clientY - input.lastY;
+    input.lastX = e.clientX;
+    input.lastY = e.clientY;
 
-    movedPx += Math.abs(dxC) + Math.abs(dyC);
+    input.moved += Math.abs(dx) + Math.abs(dy);
 
-    // pan camera
-    camX += dxC / zoom;
-    camY += dyC / zoom;
-  }, { passive: true });
+    // if moved enough -> treat as drag
+    if (input.moved > 6) input.wasDrag = true;
 
-  canvas.addEventListener("pointerup", (e) => {
-    dragging = false;
-    isInteracting = false;
-
-    // ✅ only treat as a tap if you didn’t move much
-    if (movedPx <= TAP_SLOP) {
-      const p = clientToCanvas(e);
-      const w = toWorld(p.x, p.y);
-      const idx = pickColony(w.x, w.y);
-
-      if (idx !== -1) {
-        selected = idx;
-        pushLog("event", `Selected Colony #${idx + 1}`);
-        updateInspector(); // ✅
-        if (focusOn) centerOnSelected(true);
-      }
+    // pan only if dragging
+    if (input.wasDrag) {
+      camX += dx / zoom;
+      camY += dy / zoom;
     }
   }, { passive: true });
 
+  canvas.addEventListener("pointerup", (e) => {
+    if (!input.down || e.pointerId !== input.pointerId) return;
+
+    input.down = false;
+    isInteracting = false;
+
+    const elapsed = performance.now() - input.downTime;
+    const moved = input.moved;
+
+    // TAP rule: small movement + short time
+    const isTap = moved <= 10 && elapsed <= 350;
+
+    if (isTap) {
+      const loc = canvasLocalFromClient(e.clientX, e.clientY);
+      const w = toWorldFromCanvasLocal(loc.x, loc.y);
+      input.tapWorld = w; // consumed by sim loop (prevents UI breaking sim)
+    }
+
+    input.pointerId = null;
+  }, { passive: true });
+
   canvas.addEventListener("pointercancel", () => {
-    dragging = false;
+    input.down = false;
+    input.pointerId = null;
     isInteracting = false;
   }, { passive: true });
 
@@ -360,8 +377,7 @@
   const bg = {
     canvas: document.createElement("canvas"),
     ctx: null,
-    w: 0, h: 0,
-    seed: Math.random() * 9999,
+    w: 0, h: 0
   };
   bg.ctx = bg.canvas.getContext("2d");
 
@@ -435,7 +451,7 @@
   }
   makeStarfield();
 
-  function drawBackground(time) {
+  function drawBackground() {
     const px = (-camX * zoom * 0.10) % bg.w;
     const py = (-camY * zoom * 0.10) % bg.h;
     for (let ix = -1; ix <= 1; ix++) {
@@ -443,6 +459,7 @@
         ctx.drawImage(bg.canvas, px + ix * bg.w, py + iy * bg.h);
       }
     }
+
     ctx.globalCompositeOperation = "lighter";
     ctx.fillStyle = "rgba(255,255,255,.015)";
     ctx.fillRect(0, 0, W, H);
@@ -465,6 +482,21 @@
     return `H${a}-C${b}-D${d}-A${e}-L${f}`;
   }
 
+  function makeColonyOutline(dna) {
+    const pts = [];
+    const baseR = 120 * dna.aura;
+    const spikes = randi(9, 16);
+    for (let i = 0; i < spikes; i++) {
+      const a = (i / spikes) * Math.PI * 2;
+      const wob =
+        Math.sin(a * (2.0 + dna.chaos) + dna.seed) * (18 + 18 * dna.chaos) +
+        Math.sin(a * (5.0 + dna.drift) - dna.seed * 0.7) * (10 + 12 * dna.drift);
+      const r = baseR + wob;
+      pts.push({ a, r });
+    }
+    return pts;
+  }
+
   function newColony(x, y, hue = rand(0, 360)) {
     const id = Math.random().toString(16).slice(2, 6).toUpperCase();
     const dna = {
@@ -479,36 +511,17 @@
       seed: rand(0, 9999)
     };
 
-    const outline = makeColonyOutline(dna);
-
     return {
       id,
       x, y,
       vx: rand(-0.18, 0.18),
       vy: rand(-0.18, 0.18),
       dna,
-      outline,
+      outline: makeColonyOutline(dna),
       worms: [],
       shock: [],
-      freezeT: 0,
-      lastBreath: 0,
-      muts: [] // track colony-local mutations for optional inspector UI
+      freezeT: 0
     };
-  }
-
-  function makeColonyOutline(dna) {
-    const pts = [];
-    const baseR = 120 * dna.aura;
-    const spikes = randi(9, 16);
-    for (let i = 0; i < spikes; i++) {
-      const a = (i / spikes) * Math.PI * 2;
-      const wob =
-        Math.sin(a * (2.0 + dna.chaos) + dna.seed) * (18 + 18 * dna.chaos) +
-        Math.sin(a * (5.0 + dna.drift) - dna.seed * 0.7) * (10 + 12 * dna.drift);
-      const r = baseR + wob;
-      pts.push({ a, r });
-    }
-    return pts;
   }
 
   function addLimb(w, col, big = false) {
@@ -527,11 +540,11 @@
     const segCount = big ? randi(18, 30) : randi(12, 20);
     const baseLen = big ? rand(10, 16) : rand(7, 12);
 
+    // spawn around colony (prevents global drift)
     const spawnAng = rand(0, Math.PI * 2);
     const spawnRad = rand(40, 120);
     let px = col.x + Math.cos(spawnAng) * spawnRad;
     let py = col.y + Math.sin(spawnAng) * spawnRad;
-
     let ang = rand(0, Math.PI * 2);
 
     const paletteShift = rand(-160, 160);
@@ -545,10 +558,8 @@
       speed: big ? rand(0.36, 0.78) : rand(0.48, 1.08),
       turn: rand(0.010, 0.024) * col.dna.chaos,
       phase: rand(0, Math.PI * 2),
-
       orbitDir: Math.random() < 0.5 ? -1 : 1,
       roamBias: rand(0.10, 0.28),
-
       pat: {
         stripe: Math.random() < 0.75,
         dots: Math.random() < 0.45,
@@ -556,12 +567,11 @@
         hue2: (hueBase + rand(40, 150)) % 360,
         sparkle: Math.random() < 0.35,
       },
-
       limbs: [],
       segs: [],
       isBoss: false,
       special: special || null,
-      breath: [],
+      breath: []
     };
 
     for (let i = 0; i < segCount; i++) {
@@ -602,8 +612,11 @@
   colonies[0].worms.push(newWorm(colonies[0], false));
   colonies[0].worms.push(newWorm(colonies[0], true));
 
+  // Keep recent mutations per colony for inspector
+  for (const c of colonies) c.recentMut = [];
+
   // =========================
-  // Shockwaves + particles
+  // Shockwaves
   // =========================
   function shockwave(col, strength = 1, hueOverride = null) {
     col.shock.push({
@@ -617,17 +630,17 @@
   }
 
   // =========================
-  // Flow field
+  // Flow field (prevents global “always right” drift)
   // =========================
   function flowAngle(x, y, time) {
     const t = time * 0.00025;
     const nx = x * 0.0022;
     const ny = y * 0.0022;
-    const a =
+    return (
       Math.sin(nx + t) * 1.2 +
       Math.cos(ny - t * 1.3) * 1.0 +
-      Math.sin((nx + ny) * 0.7 + t * 1.8) * 0.8;
-    return a;
+      Math.sin((nx + ny) * 0.7 + t * 1.8) * 0.8
+    );
   }
 
   function lerpAngle(a, b, t) {
@@ -638,6 +651,16 @@
   // =========================
   // Drawing
   // =========================
+  function aura(x, y, r, hue, a) {
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, `hsla(${hue},95%,65%,${a})`);
+    g.addColorStop(1, `hsla(${hue},95%,65%,0)`);
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   function strokePath(points, width, color, glow = null) {
     if (glow) {
       ctx.globalCompositeOperation = "lighter";
@@ -695,7 +718,8 @@
           ctx.arc(
             p.x + Math.sin(t * 8 + time * 0.003) * 2,
             p.y + Math.cos(t * 8 + time * 0.003) * 2,
-            r * 0.55, 0, Math.PI * 2
+            r * 0.55,
+            0, Math.PI * 2
           );
           ctx.fill();
         }
@@ -750,16 +774,6 @@
       }
       ctx.globalCompositeOperation = "source-over";
     }
-  }
-
-  function aura(x, y, r, hue, a) {
-    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-    g.addColorStop(0, `hsla(${hue},95%,65%,${a})`);
-    g.addColorStop(1, `hsla(${hue},95%,65%,0)`);
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fill();
   }
 
   function drawColony(col, time) {
@@ -867,6 +881,7 @@
       seg.a = ang;
     }
 
+    // FIRE DOGE breath (every 8-14 sec)
     if (w.special === "FIRE_DOGE") {
       if (!w.__nextBreath) w.__nextBreath = time + rand(8000, 14000);
 
@@ -910,9 +925,10 @@
   let mutTimer = 0;
   let spawnTimer = 0;
 
-  function addColonyMutation(c, msg) {
-    c.muts.unshift(msg);
-    if (c.muts.length > 14) c.muts.length = 14; // cap
+  function rememberMutation(col, msg) {
+    if (!col.recentMut) col.recentMut = [];
+    col.recentMut.unshift(msg);
+    if (col.recentMut.length > 10) col.recentMut.length = 10;
   }
 
   function mutateRandom() {
@@ -945,12 +961,10 @@
       msg = `Limb growth • Worm ${w.id}`;
     }
 
+    rememberMutation(c, msg);
     pushLog("mut", msg);
-    addColonyMutation(c, msg);
     playSfx("mut", 1);
     if (Math.random() < 0.25) shockwave(c, 0.9);
-
-    if (c === colonies[selected]) updateInspector();
   }
 
   function maybeSpawnWorms(dt) {
@@ -988,6 +1002,7 @@
       const g = growthScore();
       const starters = clamp(Math.floor(2 + g / 2), 2, 7);
       for (let i = 0; i < starters; i++) nc.worms.push(newWorm(nc, Math.random() < 0.25));
+      nc.recentMut = [];
 
       shockwave(nc, 1.1);
       colonies.push(nc);
@@ -1057,14 +1072,17 @@
   bind("sell", () => { volume = Math.max(0, volume - rand(600, 2600)); mcap = Math.max(0, mcap - rand(2200, 9000)); });
   bind("storm", () => { volume += rand(5000, 18000); mcap += rand(2000, 8000); shockwave(colonies[0], 1.0); });
   bind("mutate", () => mutateRandom());
+
   bind("focus", () => {
     focusOn = !focusOn;
     const btn = $("focusBtn");
     if (btn) btn.textContent = `Focus: ${focusOn ? "On" : "Off"}`;
     if (focusOn) centerOnSelected(false);
   });
+
   bind("zoomIn", () => (zoom = clamp(zoom * 1.12, 0.55, 2.8)));
   bind("zoomOut", () => (zoom = clamp(zoom * 0.88, 0.55, 2.8)));
+
   bind("capture", () => {
     try {
       const url = canvas.toDataURL("image/png");
@@ -1077,44 +1095,16 @@
       pushLog("event", "Capture blocked by iOS — screenshot/share instead");
     }
   });
+
   bind("reset", () => location.reload());
 
-  // =========================
-  // Inspector UI (optional)
-  // =========================
-  function updateInspector() {
-    const c = colonies[selected];
-    if (!c) return;
-
-    if (selName) selName.textContent = `Colony #${selected + 1} • ${c.id}`;
-    if (dnaVal) dnaVal.textContent = makeDnaCode(c);
-    if (tempVal) tempVal.textContent = c.dna.temperament;
-    if (biomeVal) biomeVal.textContent = c.dna.biome;
-    if (styleVal) styleVal.textContent = c.dna.style;
-
-    if (mutList) {
-      mutList.innerHTML = "";
-      const items = (c.muts || []).slice(0, 10);
-      if (!items.length) {
-        const d = document.createElement("div");
-        d.className = "mutItem";
-        d.textContent = "No mutations yet.";
-        mutList.appendChild(d);
-      } else {
-        for (const m of items) {
-          const d = document.createElement("div");
-          d.className = "mutItem";
-          d.textContent = m;
-          mutList.appendChild(d);
-        }
-      }
-    }
-
-    if (inspector) inspector.style.display = ""; // ensure visible if present
+  // Inspector close
+  if (insClose && insBox) {
+    insClose.addEventListener("click", () => insBox.classList.add("hidden"));
   }
 
   // =========================
-  // Stats
+  // UI updates (safe)
   // =========================
   function updateStats() {
     if (elBuyers) elBuyers.textContent = String(buyers);
@@ -1127,11 +1117,55 @@
     }
   }
 
+  function updateInspector() {
+    if (!insBox) return;
+    const c = colonies[selected];
+    if (!c) return;
+
+    // show if hidden and user selects
+    insBox.classList.remove("hidden");
+
+    if (insTitle) insTitle.textContent = `Colony #${selected + 1} • ${c.id}`;
+    if (insDNA) insDNA.textContent = makeDnaCode(c);
+    if (insTemp) insTemp.textContent = c.dna.temperament;
+    if (insBiome) insBiome.textContent = c.dna.biome;
+    if (insStyle) insStyle.textContent = c.dna.style;
+
+    if (insMutList) {
+      insMutList.innerHTML = "";
+      const list = (c.recentMut && c.recentMut.length) ? c.recentMut : ["No recent mutations."];
+      for (const item of list) {
+        const d = document.createElement("div");
+        d.className = "insMutItem";
+        d.textContent = item;
+        insMutList.appendChild(d);
+      }
+    }
+  }
+
+  // =========================
+  // Selection consume (tap)
+  // =========================
+  function consumeTapSelection() {
+    if (!input.tapWorld) return;
+    const w = input.tapWorld;
+    input.tapWorld = null;
+
+    const idx = pickColony(w.x, w.y);
+    if (idx !== -1) {
+      selected = idx;
+      pushLog("event", `Selected Colony #${idx + 1}`);
+      updateInspector();
+      if (focusOn) centerOnSelected(true);
+    }
+  }
+
   // =========================
   // Main step/render
   // =========================
-  let mutTimer = 0;
   function step(dt, time) {
+    consumeTapSelection();
+
     ensureBoss();
     trySplitByMcap();
     checkMilestones();
@@ -1146,7 +1180,10 @@
 
       if (c.freezeT > 0) c.freezeT = Math.max(0, c.freezeT - dt);
 
-      for (const s of c.shock) { s.r += s.v; s.a *= 0.962; }
+      for (const s of c.shock) {
+        s.r += s.v;
+        s.a *= 0.962;
+      }
       c.shock = c.shock.filter((s) => s.a > 0.06);
     }
 
@@ -1171,8 +1208,10 @@
   function render(time) {
     ctx.clearRect(0, 0, W, H);
 
+    // background in screen space
     drawBackground(time);
 
+    // world
     ctx.save();
     ctx.translate(W / 2, H / 2);
     ctx.scale(zoom, zoom);
@@ -1218,8 +1257,10 @@
     zoomOutToFitAll();
     updateStats();
     updateInspector();
+
     pushLog("event", "Simulation ready");
     if (toast) toast.textContent = "Loading…";
+
     requestAnimationFrame(tick);
   }
 
