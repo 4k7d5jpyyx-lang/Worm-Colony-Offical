@@ -34,8 +34,6 @@
     return dx * dx + dy * dy;
   };
   const hypot = Math.hypot;
-
-  // deterministic tile hashing for stars/nebula (stable in world space)
   const fract = (x) => x - Math.floor(x);
   function hash2(ix, iy, salt = 0) {
     const n = Math.sin(ix * 127.1 + iy * 311.7 + salt * 73.3) * 43758.5453123;
@@ -56,7 +54,7 @@
   const elWorms = $("worms");
   const logEl = $("log");
 
-  // ---------- Log (cap + spam merge) ----------
+  // ---------- Log ----------
   const LOG_CAP = 45;
   let lastLog = { msg: "", t: 0, count: 0 };
   function log(msg, kind = "INFO") {
@@ -76,8 +74,10 @@
     while (logEl.children.length > LOG_CAP) logEl.removeChild(logEl.lastChild);
   }
 
-  // ---------- Canvas sizing ----------
+  // ---------- Canvas sizing (FIX iOS scroll/viewport) ----------
   let W = 1, H = 1, DPR = 1;
+  let resizeRAF = 0;
+
   function resizeCanvas() {
     const rect = canvas.getBoundingClientRect();
     DPR = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
@@ -87,9 +87,24 @@
     canvas.height = Math.floor(H * DPR);
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   }
-  window.addEventListener("resize", resizeCanvas, { passive: true });
-  window.addEventListener("orientationchange", () => setTimeout(resizeCanvas, 120));
-  setTimeout(resizeCanvas, 0);
+
+  function scheduleResize() {
+    cancelAnimationFrame(resizeRAF);
+    resizeRAF = requestAnimationFrame(() => {
+      resizeCanvas();
+    });
+  }
+
+  window.addEventListener("resize", scheduleResize, { passive: true });
+  window.addEventListener("orientationchange", () => setTimeout(scheduleResize, 120));
+
+  // iOS Safari: viewport changes during scroll without resize
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", scheduleResize, { passive: true });
+    window.visualViewport.addEventListener("scroll", scheduleResize, { passive: true });
+  }
+
+  setTimeout(scheduleResize, 0);
 
   // ---------- Economy / triggers ----------
   let buyers = 0;
@@ -166,7 +181,7 @@
     e.preventDefault();
     isInteracting = true;
     const k = e.deltaY > 0 ? 0.92 : 1.08;
-    zoom = clamp(zoom * k, 0.55, 2.6);
+    zoom = clamp(zoom * k, 0.52, 2.6);
     clearTimeout(canvas.__wheelTO);
     canvas.__wheelTO = setTimeout(() => (isInteracting = false), 140);
   }, { passive: false });
@@ -202,7 +217,7 @@
     const nodes = Array.from({ length: randi(4, 7) }, () => ({
       ox: rand(-70, 70),
       oy: rand(-70, 70),
-      r: rand(55, 125),
+      r: rand(55, 130),
       ph: rand(0, Math.PI * 2),
       sp: rand(0.35, 1.1)
     }));
@@ -219,6 +234,13 @@
     };
   }
 
+  // spawn worms AROUND the colony (fixes "all move right to center")
+  function spawnPointAround(col, radiusMin, radiusMax) {
+    const a = rand(0, Math.PI * 2);
+    const r = rand(radiusMin, radiusMax);
+    return { x: col.x + Math.cos(a) * r, y: col.y + Math.sin(a) * r, a };
+  }
+
   function newWorm(col, big = false) {
     const type = ["DRIFTER", "ORBITER", "HUNTER"][randi(0, 2)];
     const segCount = big ? randi(18, 28) : randi(10, 18);
@@ -226,6 +248,8 @@
 
     const hue = (col.dna.hue + rand(-160, 160) + 360) % 360;
     const orbitDir = Math.random() < 0.5 ? -1 : 1;
+
+    const sp = spawnPointAround(col, 120, 210);
 
     const w = {
       id: Math.random().toString(16).slice(2, 6),
@@ -238,30 +262,35 @@
       segs: [],
       isBoss: false,
 
-      // NEW: velocity steering so no global heading bias
-      vx: rand(-0.6, 0.6),
-      vy: rand(-0.6, 0.6),
+      vx: 0,
+      vy: 0,
       orbitDir,
       seedA: rand(-1000, 1000),
       seedB: rand(-1000, 1000),
-      wander: rand(0.6, 1.5),
-      flow: rand(0.2, 1.0)
+      wander: rand(0.7, 1.6),
+      flow: rand(0.2, 1.0),
+
+      // NEW: each worm wants its own orbit radius
+      orbitR: rand(150, 240)
     };
 
-    let px = col.x + rand(-55, 55);
-    let py = col.y + rand(-55, 55);
-    let ang = rand(0, Math.PI * 2);
+    let px = sp.x;
+    let py = sp.y;
+    // initial heading: tangential to circle (so they start orbiting, not seeking right)
+    let ang = sp.a + (Math.PI / 2) * orbitDir;
 
     for (let i = 0; i < segCount; i++) {
       w.segs.push({ x: px, y: py, a: ang, len: baseLen * rand(0.85, 1.22) });
       px -= Math.cos(ang) * baseLen;
       py -= Math.sin(ang) * baseLen;
-      ang += rand(-0.3, 0.3) * col.dna.chaos;
+      ang += rand(-0.18, 0.18) * col.dna.chaos;
     }
 
-    // initialize velocity to match initial heading
-    w.vx = Math.cos(ang) * 0.8;
-    w.vy = Math.sin(ang) * 0.8;
+    // isotropic initial velocity (NOT biased)
+    const va = rand(0, Math.PI * 2);
+    const vm = rand(0.4, 1.0);
+    w.vx = Math.cos(va) * vm;
+    w.vy = Math.sin(va) * vm;
 
     return w;
   }
@@ -285,7 +314,7 @@
   // ---------- Fit view ----------
   function zoomOutToFitAll() {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    const pad = 620;
+    const pad = 720;
 
     for (const c of colonies) {
       minX = Math.min(minX, c.x - pad);
@@ -306,7 +335,7 @@
     camY = -cy;
   }
 
-  // ---------- Events / mechanics ----------
+  // ---------- Events ----------
   function shockwave(col, strength = 1) {
     col.shock.push({ r: 0, v: 2.6 + strength * 1.2, a: 0.85, w: 2 + strength });
   }
@@ -320,6 +349,7 @@
       boss.width *= 1.6;
       boss.speed *= 0.7;
       boss.hue = 120;
+      boss.orbitR = rand(190, 280);
       for (let i = 0; i < 4; i++) addLimb(boss, c, true);
       c.worms.push(boss);
       bossSpawned = true;
@@ -332,7 +362,7 @@
     while (mcap >= nextSplitAt && colonies.length < MAX_COLONIES) {
       const base = colonies[0];
       const ang = rand(0, Math.PI * 2);
-      const dist = rand(260, 520);
+      const dist = rand(260, 560);
       const nc = newColony(
         base.x + Math.cos(ang) * dist,
         base.y + Math.sin(ang) * dist,
@@ -486,20 +516,20 @@
     }
   }
 
-  // ---------- Rendering helpers (UPGRADED AURAS) ----------
+  // ---------- Better auras ----------
   function aura(x, y, r, hue, a) {
     const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-    g.addColorStop(0, `hsla(${hue},95%,70%,${a})`);
-    g.addColorStop(0.35, `hsla(${hue},95%,62%,${a * 0.55})`);
+    g.addColorStop(0, `hsla(${hue},95%,72%,${a})`);
+    g.addColorStop(0.35, `hsla(${hue},95%,62%,${a * 0.62})`);
     g.addColorStop(1, `hsla(${hue},95%,55%,0)`);
     ctx.fillStyle = g;
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.fill();
 
-    // inner hot core (nicer “energy”)
+    // hot core
     const g2 = ctx.createRadialGradient(x, y, 0, x, y, r * 0.28);
-    g2.addColorStop(0, `hsla(${hue},95%,78%,${a * 0.55})`);
+    g2.addColorStop(0, `hsla(${hue},95%,80%,${a * 0.55})`);
     g2.addColorStop(1, `hsla(${hue},95%,68%,0)`);
     ctx.fillStyle = g2;
     ctx.beginPath();
@@ -507,7 +537,7 @@
     ctx.fill();
   }
 
-  // WORLD-SPACE BACKGROUND: more “space”
+  // ---------- Background + grid (pixel-snapped to reduce shimmer) ----------
   function drawBackground(time) {
     const halfW = (W / 2) / zoom;
     const halfH = (H / 2) / zoom;
@@ -516,45 +546,62 @@
     const minY = -camY - halfH;
     const maxY = -camY + halfH;
 
-    // Larger grid (subtle)
+    // bigger grid
     const GRID = 240;
     const SUB = GRID / 2;
+
+    // pixel snap in world units
+    const snap = 0.5 / zoom;
 
     const gridAlpha = clamp(0.12 + (zoom - 0.7) * 0.07, 0.05, 0.16);
     const subAlpha  = gridAlpha * 0.5;
 
     ctx.lineWidth = 1 / zoom;
-    ctx.strokeStyle = `rgba(255,255,255,${gridAlpha})`;
 
     let x0 = Math.floor(minX / GRID) * GRID;
     let x1 = Math.ceil(maxX / GRID) * GRID;
     let y0 = Math.floor(minY / GRID) * GRID;
     let y1 = Math.ceil(maxY / GRID) * GRID;
 
+    ctx.strokeStyle = `rgba(255,255,255,${gridAlpha})`;
     ctx.beginPath();
-    for (let x = x0; x <= x1; x += GRID) { ctx.moveTo(x, y0); ctx.lineTo(x, y1); }
-    for (let y = y0; y <= y1; y += GRID) { ctx.moveTo(x0, y); ctx.lineTo(x1, y); }
+    for (let x = x0; x <= x1; x += GRID) {
+      const xx = Math.round(x) + snap;
+      ctx.moveTo(xx, y0);
+      ctx.lineTo(xx, y1);
+    }
+    for (let y = y0; y <= y1; y += GRID) {
+      const yy = Math.round(y) + snap;
+      ctx.moveTo(x0, yy);
+      ctx.lineTo(x1, yy);
+    }
     ctx.stroke();
 
     if (!isInteracting) {
       ctx.strokeStyle = `rgba(255,255,255,${subAlpha})`;
       ctx.beginPath();
+
       let sx0 = Math.floor(minX / SUB) * SUB;
       let sx1 = Math.ceil(maxX / SUB) * SUB;
       let sy0 = Math.floor(minY / SUB) * SUB;
       let sy1 = Math.ceil(maxY / SUB) * SUB;
+
       for (let x = sx0; x <= sx1; x += SUB) {
         if (Math.abs((x % GRID + GRID) % GRID) < 0.001) continue;
-        ctx.moveTo(x, sy0); ctx.lineTo(x, sy1);
+        const xx = Math.round(x) + snap;
+        ctx.moveTo(xx, sy0);
+        ctx.lineTo(xx, sy1);
       }
       for (let y = sy0; y <= sy1; y += SUB) {
         if (Math.abs((y % GRID + GRID) % GRID) < 0.001) continue;
-        ctx.moveTo(sx0, y); ctx.lineTo(sx1, y);
+        const yy = Math.round(y) + snap;
+        ctx.moveTo(sx0, yy);
+        ctx.lineTo(sx1, yy);
       }
       ctx.stroke();
     }
 
-    // Nebula haze tiles (very soft)
+    // nebula haze
     if (!isInteracting) {
       const NT = 820;
       const ntx0 = Math.floor(minX / NT);
@@ -572,7 +619,7 @@
           const cx = (tx + hash2(tx, ty, 10)) * NT;
           const cy = (ty + hash2(tx, ty, 11)) * NT;
 
-          const hue = 190 + hash2(tx, ty, 12) * 140; // teal->purple
+          const hue = 190 + hash2(tx, ty, 12) * 140;
           const rad = 520 + hash2(tx, ty, 13) * 900;
           const a = 0.05 + hash2(tx, ty, 14) * 0.08;
 
@@ -588,10 +635,10 @@
       ctx.restore();
     }
 
-    // Stars (denser + a few bright stars)
+    // stars
     const TILE = 320;
-    const baseStars = isInteracting ? 2 : 6;      // MORE stars
-    const brightStars = isInteracting ? 0 : 1;    // a few bright ones
+    const baseStars = isInteracting ? 2 : 7;
+    const brightStars = isInteracting ? 0 : 1;
 
     const tx0 = Math.floor(minX / TILE);
     const tx1 = Math.ceil(maxX / TILE);
@@ -629,7 +676,6 @@
           const br = 1.8 + hash2(tx, ty, 103 + b) * 2.2;
           const ba = 0.35 + hash2(tx, ty, 104 + b) * 0.35;
 
-          // tiny bloom
           ctx.save();
           ctx.globalCompositeOperation = "lighter";
           const g = ctx.createRadialGradient(bx, by, 0, bx, by, br * 10);
@@ -648,14 +694,12 @@
         }
       }
     }
-
     ctx.restore();
   }
 
   function irregularBlob(col, time) {
     const baseHue = col.dna.hue;
 
-    // better glow layering
     if (!isInteracting) {
       ctx.save();
       ctx.globalCompositeOperation = "lighter";
@@ -664,16 +708,15 @@
         const x = col.x + n.ox + Math.sin(time * 0.001 * n.sp + n.ph) * 12;
         const y = col.y + n.oy + Math.cos(time * 0.001 * n.sp + n.ph) * 12;
 
-        aura(x, y, n.r * 1.25, (baseHue + i * 16) % 360, 0.20);
-        aura(x, y, n.r * 0.82, (baseHue + i * 22 + 45) % 360, 0.12);
+        aura(x, y, n.r * 1.30, (baseHue + i * 16) % 360, 0.22);
+        aura(x, y, n.r * 0.85, (baseHue + i * 22 + 45) % 360, 0.13);
       }
       ctx.restore();
     } else {
-      aura(col.x, col.y, 170 * col.dna.aura, baseHue, 0.14);
+      aura(col.x, col.y, 180 * col.dna.aura, baseHue, 0.14);
     }
 
-    // outline ring
-    const R = 135;
+    const R = 138;
     ctx.strokeStyle = `hsla(${baseHue}, 90%, 66%, .30)`;
     ctx.lineWidth = 1.8;
     ctx.beginPath();
@@ -693,10 +736,9 @@
   function drawWorm(w, time) {
     const pts = w.segs;
 
-    // upgraded outer bloom
     if (!isInteracting) {
       ctx.globalCompositeOperation = "lighter";
-      ctx.strokeStyle = `hsla(${w.hue}, 92%, 62%, ${w.isBoss ? 0.34 : 0.20})`;
+      ctx.strokeStyle = `hsla(${w.hue}, 92%, 62%, ${w.isBoss ? 0.36 : 0.20})`;
       ctx.lineWidth = w.width + (w.isBoss ? 10 : 7);
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
@@ -706,7 +748,6 @@
       ctx.stroke();
     }
 
-    // core
     ctx.globalCompositeOperation = "source-over";
     ctx.strokeStyle = `hsla(${w.hue}, 95%, 66%, ${w.isBoss ? 0.98 : 0.92})`;
     ctx.lineWidth = w.width;
@@ -717,7 +758,6 @@
     for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
     ctx.stroke();
 
-    // beads
     if (!isInteracting) {
       for (let i = 0; i < pts.length; i += 4) {
         const p = pts[i];
@@ -729,7 +769,6 @@
       }
     }
 
-    // limbs
     if (w.limbs?.length) {
       ctx.globalCompositeOperation = isInteracting ? "source-over" : "lighter";
       for (const L of w.limbs) {
@@ -759,87 +798,78 @@
     }
   }
 
-  // ---------- FIX: worms no longer “rush right” (velocity steering) ----------
+  // ---------- FIX: orbit-drive worms (no “seek right” bias) ----------
   function wormBehavior(col, w, time, dt) {
     const head = w.segs[0];
 
-    // vector to colony center
-    const dx = col.x - head.x;
-    const dy = col.y - head.y;
+    const dx = head.x - col.x;
+    const dy = head.y - col.y;
     const d = Math.max(1, hypot(dx, dy));
-    const nx = dx / d;
+    const nx = dx / d; // outward normal
     const ny = dy / d;
 
-    // tangential direction for orbit
+    // tangent for orbiting around colony
     const tx = -ny * w.orbitDir;
     const ty = nx * w.orbitDir;
 
-    // smooth flow field (mean ~0, not biased to +X)
-    const fx = Math.sin((head.y + w.seedA) * 0.002 + time * 0.0005) * 0.6 + Math.cos((head.x + w.seedB) * 0.002 - time * 0.00045) * 0.6;
-    const fy = Math.cos((head.x + w.seedA) * 0.002 + time * 0.0005) * 0.6 + Math.sin((head.y + w.seedB) * 0.002 - time * 0.00045) * 0.6;
+    // keep near preferred orbit radius (in/out correction)
+    const err = (w.orbitR - d); // positive = too far in, negative = too far out
+    const corr = clamp(err / 120, -1, 1);
 
-    // wander
+    // zero-mean flow + wander (no global drift)
+    const fx = Math.sin((head.y + w.seedA) * 0.002 + time * 0.00055) * 0.7 + Math.cos((head.x + w.seedB) * 0.002 - time * 0.0005) * 0.7;
+    const fy = Math.cos((head.x + w.seedA) * 0.002 + time * 0.00055) * 0.7 + Math.sin((head.y + w.seedB) * 0.002 - time * 0.0005) * 0.7;
+
     const wa = Math.sin(time * 0.0012 + w.phase) * w.wander;
     const wx = Math.cos(wa);
     const wy = Math.sin(wa);
 
-    // choose desired direction by worm type
     let dirX = 0, dirY = 0;
 
+    // orbit-first so they circle instead of marching to one side
     if (w.type === "DRIFTER") {
-      // mostly drift with gentle pull toward colony
-      dirX = nx * 0.55 + tx * 0.20 + fx * 0.55 * w.flow + wx * 0.25;
-      dirY = ny * 0.55 + ty * 0.20 + fy * 0.55 * w.flow + wy * 0.25;
+      dirX = tx * 0.85 + (-nx) * (0.20 * corr) + fx * 0.40 * w.flow + wx * 0.28;
+      dirY = ty * 0.85 + (-ny) * (0.20 * corr) + fy * 0.40 * w.flow + wy * 0.28;
     } else if (w.type === "ORBITER") {
-      // orbit strongly, with slight inward pull so it stays near colony
-      dirX = tx * 0.95 + nx * 0.22 + fx * 0.35 * w.flow + wx * 0.10;
-      dirY = ty * 0.95 + ny * 0.22 + fy * 0.35 * w.flow + wy * 0.10;
+      dirX = tx * 1.05 + (-nx) * (0.28 * corr) + fx * 0.28 * w.flow + wx * 0.14;
+      dirY = ty * 1.05 + (-ny) * (0.28 * corr) + fy * 0.28 * w.flow + wy * 0.14;
     } else {
-      // hunter: more decisive movement with “bite” wobble
+      // Hunter: orbit + occasional “bite” inward then back out
       const bite = Math.sin(time * 0.003 + w.phase) * 0.55;
-      dirX = nx * (0.78 + bite * 0.08) + tx * 0.30 + fx * 0.40 * w.flow + wx * 0.18;
-      dirY = ny * (0.78 + bite * 0.08) + ty * 0.30 + fy * 0.40 * w.flow + wy * 0.18;
+      dirX = tx * 0.90 + (-nx) * (0.34 * corr + 0.06 * bite) + fx * 0.35 * w.flow + wx * 0.20;
+      dirY = ty * 0.90 + (-ny) * (0.34 * corr + 0.06 * bite) + fy * 0.35 * w.flow + wy * 0.20;
     }
 
-    // normalize desired direction
     const dl = Math.max(1e-6, hypot(dirX, dirY));
     dirX /= dl; dirY /= dl;
 
-    // target velocity
     const boost = w.isBoss ? 2.0 : 1.0;
-    const baseSpd = w.speed * 2.15 * boost;
+    const baseSpd = w.speed * 2.1 * boost;
 
-    // soft boundary: if too far, increase inward pull (prevents drifting offscreen)
-    const maxR = 320;
-    const pull = clamp((d - 160) / (maxR - 160), 0, 1);
-    const inX = nx * pull;
-    const inY = ny * pull;
+    // target velocity
+    const targetVX = dirX * baseSpd;
+    const targetVY = dirY * baseSpd;
 
-    const targetVX = (dirX + inX * 0.85) * baseSpd;
-    const targetVY = (dirY + inY * 0.85) * baseSpd;
-
-    // steer velocity (key fix)
     const steer = clamp(0.08 + dt * 3.2, 0.06, 0.18);
     w.vx = lerp(w.vx, targetVX, steer);
     w.vy = lerp(w.vy, targetVY, steer);
 
-    // tiny damping to prevent runaway drift
+    // mild damping
     w.vx *= 0.995;
     w.vy *= 0.995;
 
-    // move head
     head.x += w.vx;
     head.y += w.vy;
-
-    // heading angle for drawing / limb orientation
     head.a = Math.atan2(w.vy, w.vx);
 
-    // keep within a soft radius without “snap flip”
+    // keep within a soft max radius
+    const maxR = 360;
     if (d > maxR) {
-      head.x = col.x + (head.x - col.x) * 0.95;
-      head.y = col.y + (head.y - col.y) * 0.95;
-      w.vx = w.vx * 0.85 + nx * baseSpd * 0.25;
-      w.vy = w.vy * 0.85 + ny * baseSpd * 0.25;
+      head.x = col.x + nx * maxR;
+      head.y = col.y + ny * maxR;
+      // nudge tangent so it slides along boundary instead of drifting outward
+      w.vx = tx * baseSpd * 0.9;
+      w.vy = ty * baseSpd * 0.9;
     }
 
     // follow segments
@@ -861,7 +891,19 @@
   }
 
   // ---------- Step / Render ----------
-  let mutTimer = 0;
+  function updateStats() {
+    if (elBuyers) elBuyers.textContent = String(buyers);
+    if (elVolume) elVolume.textContent = fmt(volume);
+    if (elMcap) elMcap.textContent = fmt(mcap);
+    if (elColonies) elColonies.textContent = String(colonies.length);
+    if (elWorms) {
+      const total = colonies.reduce((a, c) => a + c.worms.length, 0);
+      elWorms.textContent = String(total);
+    }
+  }
+
+  let mutTimer2 = 0;
+
   function step(dt, time) {
     ensureBoss();
     trySplitByMcap();
@@ -884,11 +926,11 @@
 
     if (focusOn) centerOnSelected(true);
 
-    mutTimer += dt;
+    mutTimer2 += dt;
     const g = growthScore();
     const mutRate = clamp(2.2 - g * 0.08, 0.4, 2.2);
-    if (mutTimer >= mutRate) {
-      mutTimer = 0;
+    if (mutTimer2 >= mutRate) {
+      mutTimer2 = 0;
       if (Math.random() < 0.65) mutateRandom();
     }
 
@@ -904,7 +946,6 @@
     ctx.scale(zoom, zoom);
     ctx.translate(camX, camY);
 
-    // space background + grid + stars + nebula
     drawBackground(time);
 
     for (let i = 0; i < colonies.length; i++) {
@@ -915,8 +956,8 @@
       if (!isInteracting) {
         ctx.save();
         ctx.globalCompositeOperation = "lighter";
-        aura(c.x, c.y, 170 * c.dna.aura, c.dna.hue, 0.20);
-        aura(c.x, c.y, 110 * c.dna.aura, (c.dna.hue + 40) % 360, 0.12);
+        aura(c.x, c.y, 190 * c.dna.aura, c.dna.hue, 0.22);
+        aura(c.x, c.y, 125 * c.dna.aura, (c.dna.hue + 40) % 360, 0.13);
         ctx.restore();
       }
 
@@ -924,7 +965,7 @@
         ctx.strokeStyle = `hsla(${c.dna.hue}, 95%, 65%, .55)`;
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.arc(c.x, c.y, 105 * c.dna.aura, 0, Math.PI * 2);
+        ctx.arc(c.x, c.y, 110 * c.dna.aura, 0, Math.PI * 2);
         ctx.stroke();
       }
 
