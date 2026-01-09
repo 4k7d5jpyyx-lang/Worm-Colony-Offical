@@ -1342,3 +1342,164 @@
   window.addEventListener("load", boot);
   if (document.readyState === "complete") boot();
 })();
+/* ============================
+   GLOBAL MILESTONE FLAGS
+============================ */
+let fired100k = false;
+let fired250k = false;
+
+/* ============================
+   EVENT LOGGER (safe append)
+============================ */
+function logEvent(text) {
+  const list = document.getElementById("eventList");
+  if (!list) return;
+
+  const row = document.createElement("div");
+  row.className = "eventRow";
+  row.textContent = text;
+  list.prepend(row);
+
+  // cap log size
+  while (list.children.length > 30) {
+    list.removeChild(list.lastChild);
+  }
+}
+
+/* ============================
+   WORM CLASS EXTENSIONS
+============================ */
+class Worm {
+  constructor(opts = {}) {
+    this.x = opts.x || 0;
+    this.y = opts.y || 0;
+
+    this.angle = Math.random() * Math.PI * 2;
+    this.turnBias = (Math.random() - 0.5) * 0.02;
+
+    this.speed = opts.speed || (0.6 + Math.random() * 1.4);
+    this.size = opts.size || 1;
+    this.color = opts.color || randomWormGradient();
+
+    this.isBoss = opts.isBoss || false;
+    this.type = opts.type || "normal";
+
+    this.cooldown = 0;
+  }
+
+  update() {
+    // REMOVE RIGHTWARD DRIFT COMPLETELY
+    const noise = (Math.random() - 0.5) * 0.25;
+    this.angle += this.turnBias + noise;
+
+    this.x += Math.cos(this.angle) * this.speed;
+    this.y += Math.sin(this.angle) * this.speed;
+
+    // soft boundary wrap
+    if (this.x > worldSize) this.x = -worldSize;
+    if (this.x < -worldSize) this.x = worldSize;
+    if (this.y > worldSize) this.y = -worldSize;
+    if (this.y < -worldSize) this.y = worldSize;
+
+    // boss abilities
+    if (this.isBoss) this.bossTick();
+  }
+
+  bossTick() {
+    this.cooldown--;
+    if (this.cooldown > 0) return;
+
+    if (this.type === "fireDoge") {
+      spawnFireBreath(this.x, this.y);
+      this.cooldown = 240;
+    }
+
+    if (this.type === "iceQueen") {
+      spawnIceShockwave(this.x, this.y);
+      this.cooldown = 300;
+    }
+  }
+}
+
+/* ============================
+   SPECIAL EFFECTS
+============================ */
+function spawnFireBreath(x, y) {
+  for (let i = 0; i < 18; i++) {
+    particles.push({
+      x,
+      y,
+      vx: Math.cos(Math.random() * Math.PI * 2) * 3,
+      vy: Math.sin(Math.random() * Math.PI * 2) * 3,
+      life: 40,
+      color: "orange"
+    });
+  }
+}
+
+function spawnIceShockwave(x, y) {
+  shockwaves.push({
+    x,
+    y,
+    radius: 0,
+    max: 140,
+    color: "rgba(180,220,255,0.6)"
+  });
+}
+
+/* ============================
+   BOSS SPAWNERS
+============================ */
+function spawnFireDogeWorm(colony) {
+  const worm = new Worm({
+    x: colony.x,
+    y: colony.y,
+    size: 2.2,
+    speed: 1.8,
+    isBoss: true,
+    type: "fireDoge",
+    color: ["#ff4500", "#ffaa00", "#ff2200"]
+  });
+
+  worms.push(worm);
+  logEvent("🔥 EVENT: Fire-Breathing Doge Worm emerged (100k MC)");
+}
+
+function spawnIceQueenWorm(colony) {
+  const worm = new Worm({
+    x: colony.x,
+    y: colony.y,
+    size: 2.8,
+    speed: 1.1,
+    isBoss: true,
+    type: "iceQueen",
+    color: ["#e6f7ff", "#99ddff", "#cceeff"]
+  });
+
+  worms.push(worm);
+  logEvent("❄️ EVENT: Ice Queen hatched (250k MC)");
+}
+
+/* ============================
+   MARKET CAP MILESTONES
+============================ */
+function checkMilestones() {
+  if (marketCap >= 100000 && !fired100k) {
+    fired100k = true;
+    spawnFireDogeWorm(colonies[0]);
+  }
+
+  if (marketCap >= 250000 && !fired250k) {
+    fired250k = true;
+    spawnIceQueenWorm(colonies[0]);
+  }
+}
+
+/* ============================
+   HOOK INTO MAIN LOOP
+============================ */
+// call this ONCE per frame or tick
+function simulationTick() {
+  worms.forEach(w => w.update());
+  checkMilestones();
+}
